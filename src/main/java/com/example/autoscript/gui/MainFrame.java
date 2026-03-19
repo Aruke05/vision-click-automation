@@ -1,6 +1,7 @@
 package com.example.autoscript.gui;
 
 import com.example.autoscript.model.AppConfig;
+import com.example.autoscript.model.CaptureMode;
 import com.example.autoscript.model.ConditionConfig;
 import com.example.autoscript.model.MonitorRegion;
 import com.example.autoscript.model.WindowInfo;
@@ -23,6 +24,7 @@ import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -95,6 +97,7 @@ public class MainFrame extends JFrame {
     private final JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(90, 1, 100, 1));
     private final JCheckBox repeatTriggerCheckBox = new JCheckBox("连续命中重复触发");
     private final JCheckBox backgroundClickModeCheckBox = new JCheckBox("后台点击模式(不抢前台/不移动鼠标)");
+    private final JComboBox<CaptureMode> captureModeComboBox = new JComboBox<>(CaptureMode.values());
     private final JTextField startHotkeyField = new JTextField("F9");
     private final JTextField stopHotkeyField = new JTextField("F10");
     private final JSpinner clickXSpinner = new JSpinner(new SpinnerNumberModel(100, -10000, 10000, 1));
@@ -257,6 +260,7 @@ public class MainFrame extends JFrame {
         addFormRow(form, gbc, row++, "轮询间隔(ms)", intervalSpinner);
         addFormRow(form, gbc, row++, "重复触发", repeatTriggerCheckBox);
         addFormRow(form, gbc, row++, "点击模式", backgroundClickModeCheckBox);
+        addFormRow(form, gbc, row++, "截图模式", captureModeComboBox);
         addFormRow(form, gbc, row++, "启动热键", startHotkeyField);
         addFormRow(form, gbc, row++, "停止热键", stopHotkeyField);
         addFormRow(form, gbc, row++, "热键示例", new JLabel("F9 / F10 / CTRL+F9"));
@@ -1232,7 +1236,7 @@ public class MainFrame extends JFrame {
                 Thread.currentThread().interrupt();
             }
 
-            BufferedImage image = captureService.capture(boundWindow, config.getMonitorRegion());
+            BufferedImage image = captureService.capture(boundWindow, config.getMonitorRegion(), config.getCaptureMode());
 
             Path projectRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
             Path captureDir = projectRoot.resolve("captures");
@@ -1388,6 +1392,7 @@ public class MainFrame extends JFrame {
         config.setIntervalMs(((Number) intervalSpinner.getValue()).intValue());
         config.setRepeatTrigger(repeatTriggerCheckBox.isSelected());
         config.setBackgroundClickMode(backgroundClickModeCheckBox.isSelected());
+        config.setCaptureMode((CaptureMode) captureModeComboBox.getSelectedItem());
         config.setStartHotkey(GlobalHotkeyService.normalizeHotkeyText(startHotkeyField.getText(), "F9"));
         config.setStopHotkey(GlobalHotkeyService.normalizeHotkeyText(stopHotkeyField.getText(), "F10"));
         return config;
@@ -1429,6 +1434,7 @@ public class MainFrame extends JFrame {
         intervalSpinner.setValue(config.getIntervalMs());
         repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
         backgroundClickModeCheckBox.setSelected(config.isBackgroundClickMode());
+        captureModeComboBox.setSelectedItem(config.getCaptureMode());
         String normalizedStart = "F9";
         String normalizedStop = "F10";
         try {
@@ -1475,6 +1481,7 @@ public class MainFrame extends JFrame {
         merged.setIntervalMs(sourceGlobal.getIntervalMs());
         merged.setRepeatTrigger(sourceGlobal.isRepeatTrigger());
         merged.setBackgroundClickMode(sourceGlobal.isBackgroundClickMode());
+        merged.setCaptureMode(sourceGlobal.getCaptureMode());
         merged.setStartHotkey(sourceGlobal.getStartHotkey());
         merged.setStopHotkey(sourceGlobal.getStopHotkey());
         merged.setThreshold(sourceCondition.getThreshold());

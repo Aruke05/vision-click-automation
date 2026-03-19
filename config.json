@@ -16,6 +16,7 @@
   "clickY" : 1090,
   "repeatTrigger" : true,
   "backgroundClickMode" : false,
+  "captureMode" : "WINDOW_HANDLE",
   "startHotkey" : "F9",
   "stopHotkey" : "F10",
   "templatePath" : "F:\\download\\高潮.png",

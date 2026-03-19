@@ -115,7 +115,11 @@ public class MonitoringService {
                     continue;
                 }
                 AppConfig conditionConfig = pollingCondition.getConfig();
-                BufferedImage captured = captureService.capture(window, conditionConfig.getMonitorRegion());
+                BufferedImage captured = captureService.capture(
+                        window,
+                        conditionConfig.getMonitorRegion(),
+                        conditionConfig.getCaptureMode()
+                );
                 MonitorContext context = new MonitorContext(
                         window,
                         conditionConfig,

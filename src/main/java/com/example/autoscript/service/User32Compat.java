@@ -3,6 +3,7 @@ package com.example.autoscript.service;
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.WinDef.HWND;
+import com.sun.jna.platform.win32.WinDef.HDC;
 import com.sun.jna.platform.win32.WinDef.LPARAM;
 import com.sun.jna.platform.win32.WinDef.LRESULT;
 import com.sun.jna.platform.win32.WinDef.POINT;
@@ -25,7 +26,10 @@ public interface User32Compat extends StdCallLibrary {
     boolean IsWindow(HWND hWnd);
     boolean IsIconic(HWND hWnd);
     boolean ShowWindow(HWND hWnd, int nCmdShow);
+    HDC GetDC(HWND hWnd);
+    int ReleaseDC(HWND hWnd, HDC hDC);
     boolean SetForegroundWindow(HWND hWnd);
+    boolean PrintWindow(HWND hWnd, HDC hdcBlt, int nFlags);
     HWND GetForegroundWindow();
     boolean GetClientRect(HWND hWnd, RECT rect);
     boolean PostMessage(HWND hWnd, int msg, WPARAM wParam, LPARAM lParam);
