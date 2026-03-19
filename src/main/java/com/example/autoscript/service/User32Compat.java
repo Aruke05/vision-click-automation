@@ -36,4 +36,7 @@ public interface User32Compat extends StdCallLibrary {
     LRESULT DispatchMessage(WinUser.MSG lpMsg);
     boolean PostThreadMessage(int idThread, int msg, WPARAM wParam, LPARAM lParam);
     boolean ClientToScreen(HWND hWnd, POINT lpPoint);
+    boolean GetCursorPos(POINT lpPoint);
+    boolean SetCursorPos(int x, int y);
+    boolean BlockInput(boolean fBlockIt);
 }

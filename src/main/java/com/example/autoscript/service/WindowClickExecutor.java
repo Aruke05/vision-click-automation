@@ -5,6 +5,7 @@ import com.example.autoscript.model.WindowInfo;
 import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.LPARAM;
+import com.sun.jna.platform.win32.WinDef.POINT;
 import com.sun.jna.platform.win32.WinDef.WPARAM;
 
 import java.awt.GraphicsConfiguration;
@@ -26,6 +27,7 @@ public class WindowClickExecutor implements ActionExecutor {
     private static final int MK_LBUTTON = 0x0001;
     private static final int MOUSE_VERIFY_TOLERANCE_PX = 12;
     private static final int MOUSE_VERIFY_RETRY = 2;
+    private static final int FOREGROUND_RESTORE_RETRY = 3;
 
     private final WindowService windowService;
     private final Robot robot;
@@ -55,18 +57,29 @@ public class WindowClickExecutor implements ActionExecutor {
             }
         }
 
-        Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
-        windowService.restoreIfMinimized(window);
-        windowService.bringToFront(window);
-        robot.delay(80);
+        HWND previousForeground = User32Compat.INSTANCE.GetForegroundWindow();
+        Point previousCursor = queryCursorPosition();
+        boolean inputLocked = lockUserInput();
+        try {
+            Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
+            windowService.restoreIfMinimized(window);
+            windowService.bringToFront(window);
+            robot.delay(80);
 
-        boolean foregroundReady = waitForeground(window, forceRobot ? 4 : 2, 35);
-        if (!foregroundReady) {
-            forceClickByRobot(window, screenPoint);
+            boolean foregroundReady = waitForeground(window, forceRobot ? 4 : 2, 35);
+            if (!foregroundReady) {
+                forceClickByRobot(window, screenPoint);
+                return true;
+            }
+            clickByRobot(screenPoint);
             return true;
+        } finally {
+            restoreForegroundWindow(previousForeground);
+            restoreCursorPosition(previousCursor);
+            if (inputLocked) {
+                unlockUserInput();
+            }
         }
-        clickByRobot(screenPoint);
-        return true;
     }
 
     @Override
@@ -269,6 +282,66 @@ public class WindowClickExecutor implements ActionExecutor {
             return pointerInfo.getLocation();
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    private boolean lockUserInput() {
+        try {
+            return User32Compat.INSTANCE.BlockInput(true);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void unlockUserInput() {
+        try {
+            User32Compat.INSTANCE.BlockInput(false);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private Point queryCursorPosition() {
+        try {
+            POINT point = new POINT();
+            if (User32Compat.INSTANCE.GetCursorPos(point)) {
+                return new Point(point.x, point.y);
+            }
+        } catch (Exception ignored) {
+        }
+        return getMouseLocation();
+    }
+
+    private void restoreCursorPosition(Point position) {
+        if (position == null) {
+            return;
+        }
+        try {
+            boolean restoredByNative = User32Compat.INSTANCE.SetCursorPos(position.x, position.y);
+            if (restoredByNative) {
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        try {
+            Point awtPoint = toAwtPoint(position);
+            robot.mouseMove(awtPoint.x, awtPoint.y);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void restoreForegroundWindow(HWND hWnd) {
+        if (hWnd == null || hWnd.getPointer() == null) {
+            return;
+        }
+        try {
+            for (int i = 0; i < FOREGROUND_RESTORE_RETRY; i++) {
+                User32Compat.INSTANCE.SetForegroundWindow(hWnd);
+                robot.delay(22);
+                if (isSameWindow(hWnd, User32Compat.INSTANCE.GetForegroundWindow())) {
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
         }
     }
 }
