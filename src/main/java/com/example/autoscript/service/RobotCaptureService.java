@@ -29,8 +29,8 @@ public class RobotCaptureService implements CaptureService {
         Rectangle target = region.resolveWithin(clientRect);
         Rectangle captureRect = target.intersection(clientRect);
         if (captureRect.width <= 0 || captureRect.height <= 0) {
-            int maxX = clientRect.width - region.getWidth();
-            int maxY = clientRect.height - region.getHeight();
+            int maxX = clientRect.width - target.width;
+            int maxY = clientRect.height - target.height;
             throw new IllegalArgumentException("监控区域越界: " + region
                     + ", client=" + clientRect
                     + ", 建议 client 坐标范围 x=[0," + maxX + "], y=[0," + maxY + "]");

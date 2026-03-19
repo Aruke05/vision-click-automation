@@ -59,11 +59,11 @@ public class WindowClickExecutor implements ActionExecutor {
             }
         }
 
+        Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
         HWND previousForeground = User32Compat.INSTANCE.GetForegroundWindow();
         Point previousCursor = queryCursorPosition();
-        InputGuard inputGuard = InputGuard.acquire(previousCursor);
+        InputGuard inputGuard = InputGuard.acquire(screenPoint);
         try {
-            Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
             windowService.restoreIfMinimized(window);
             windowService.bringToFront(window);
             robot.delay(80);

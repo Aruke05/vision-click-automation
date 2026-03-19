@@ -18,6 +18,9 @@ public class MonitorRegion implements Serializable {
     private int offsetY = 0;
     private int width = 320;
     private int height = 180;
+    // 记录配置时窗口 client 尺寸，用于运行时按比例缩放坐标。
+    private int referenceWidth = 0;
+    private int referenceHeight = 0;
 
     public MonitorRegion() {
     }
@@ -31,9 +34,14 @@ public class MonitorRegion implements Serializable {
     }
 
     public Rectangle resolveWithin(Rectangle baseRect) {
-        int x = baseRect.x + offsetX;
-        int y = baseRect.y + offsetY;
-        return new Rectangle(x, y, Math.max(1, width), Math.max(1, height));
+        if (baseRect == null) {
+            throw new IllegalArgumentException("baseRect 不能为空");
+        }
+        int resolvedX = scaleValue(offsetX, baseRect.width, referenceWidth);
+        int resolvedY = scaleValue(offsetY, baseRect.height, referenceHeight);
+        int resolvedWidth = Math.max(1, scaleValue(width, baseRect.width, referenceWidth));
+        int resolvedHeight = Math.max(1, scaleValue(height, baseRect.height, referenceHeight));
+        return new Rectangle(baseRect.x + resolvedX, baseRect.y + resolvedY, resolvedWidth, resolvedHeight);
     }
 
     public int getX() {
@@ -92,6 +100,33 @@ public class MonitorRegion implements Serializable {
         this.height = height;
     }
 
+    public int getReferenceWidth() {
+        return referenceWidth;
+    }
+
+    public void setReferenceWidth(int referenceWidth) {
+        this.referenceWidth = Math.max(0, referenceWidth);
+    }
+
+    public int getReferenceHeight() {
+        return referenceHeight;
+    }
+
+    public void setReferenceHeight(int referenceHeight) {
+        this.referenceHeight = Math.max(0, referenceHeight);
+    }
+
+    public boolean hasReferenceSize() {
+        return referenceWidth > 0 && referenceHeight > 0;
+    }
+
+    private int scaleValue(int value, int currentSize, int referenceSize) {
+        if (referenceSize <= 0 || currentSize <= 0) {
+            return value;
+        }
+        return (int) Math.round((double) value * (double) currentSize / (double) referenceSize);
+    }
+
     @Override
     public String toString() {
         return "MonitorRegion{" +
@@ -99,6 +134,8 @@ public class MonitorRegion implements Serializable {
                 ", y=" + offsetY +
                 ", width=" + width +
                 ", height=" + height +
+                ", referenceWidth=" + referenceWidth +
+                ", referenceHeight=" + referenceHeight +
                 '}';
     }
 }

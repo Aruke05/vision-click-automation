@@ -30,6 +30,8 @@ public class ConditionConfig implements Serializable {
             clonedRegion.setY(otherRegion.getY());
             clonedRegion.setWidth(otherRegion.getWidth());
             clonedRegion.setHeight(otherRegion.getHeight());
+            clonedRegion.setReferenceWidth(otherRegion.getReferenceWidth());
+            clonedRegion.setReferenceHeight(otherRegion.getReferenceHeight());
         }
         this.monitorRegion = clonedRegion;
         this.threshold = other.getThreshold();

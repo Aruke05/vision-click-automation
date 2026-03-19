@@ -1,5 +1,7 @@
 package com.example.autoscript.model;
 
+import java.awt.Point;
+import java.awt.Rectangle;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -45,7 +47,7 @@ public class AppConfig implements Serializable {
     }
 
     public void setMonitorRegion(MonitorRegion monitorRegion) {
-        this.monitorRegion = monitorRegion;
+        this.monitorRegion = monitorRegion == null ? new MonitorRegion() : monitorRegion;
     }
 
     public int getClickX() {
@@ -62,6 +64,24 @@ public class AppConfig implements Serializable {
 
     public void setClickY(int clickY) {
         this.clickY = clickY;
+    }
+
+    public int resolveClickX(Rectangle clientRect) {
+        if (clientRect == null) {
+            return clickX;
+        }
+        return scaleValue(clickX, clientRect.width, getReferenceWidth());
+    }
+
+    public int resolveClickY(Rectangle clientRect) {
+        if (clientRect == null) {
+            return clickY;
+        }
+        return scaleValue(clickY, clientRect.height, getReferenceHeight());
+    }
+
+    public Point resolveClickPoint(Rectangle clientRect) {
+        return new Point(resolveClickX(clientRect), resolveClickY(clientRect));
     }
 
     public boolean isRepeatTrigger() {
@@ -184,6 +204,8 @@ public class AppConfig implements Serializable {
             region.setY(currentRegion.getY());
             region.setWidth(currentRegion.getWidth());
             region.setHeight(currentRegion.getHeight());
+            region.setReferenceWidth(currentRegion.getReferenceWidth());
+            region.setReferenceHeight(currentRegion.getReferenceHeight());
         }
         condition.setMonitorRegion(region);
         condition.setThreshold(getThreshold());
@@ -230,7 +252,26 @@ public class AppConfig implements Serializable {
             region.setY(firstRegion.getY());
             region.setWidth(firstRegion.getWidth());
             region.setHeight(firstRegion.getHeight());
+            region.setReferenceWidth(firstRegion.getReferenceWidth());
+            region.setReferenceHeight(firstRegion.getReferenceHeight());
         }
         setMonitorRegion(region);
+    }
+
+    private int getReferenceWidth() {
+        MonitorRegion region = getMonitorRegion();
+        return region == null ? 0 : region.getReferenceWidth();
+    }
+
+    private int getReferenceHeight() {
+        MonitorRegion region = getMonitorRegion();
+        return region == null ? 0 : region.getReferenceHeight();
+    }
+
+    private int scaleValue(int value, int currentSize, int referenceSize) {
+        if (referenceSize <= 0 || currentSize <= 0) {
+            return value;
+        }
+        return (int) Math.round((double) value * (double) currentSize / (double) referenceSize);
     }
 }

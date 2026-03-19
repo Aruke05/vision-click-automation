@@ -651,8 +651,42 @@ public class MainFrame extends JFrame {
         region.setY(((Number) regionOffsetYSpinner.getValue()).intValue());
         region.setWidth(((Number) regionWidthSpinner.getValue()).intValue());
         region.setHeight(((Number) regionHeightSpinner.getValue()).intValue());
+        applyReferenceSizeToEditorRegion(region);
         condition.setMonitorRegion(region);
         return condition;
+    }
+
+    private void applyReferenceSizeToEditorRegion(MonitorRegion region) {
+        if (region == null) {
+            return;
+        }
+        int selectedRow = conditionTable.getSelectedRow();
+        if (selectedRow >= 0) {
+            ConditionConfig selected = conditionTableModel.getConditionAt(selectedRow);
+            MonitorRegion selectedRegion = selected == null ? null : selected.getMonitorRegion();
+            if (selectedRegion != null && selectedRegion.hasReferenceSize()) {
+                region.setReferenceWidth(selectedRegion.getReferenceWidth());
+                region.setReferenceHeight(selectedRegion.getReferenceHeight());
+                return;
+            }
+        }
+
+        Rectangle clientRect = tryGetBoundClientRect();
+        if (clientRect != null) {
+            region.setReferenceWidth(clientRect.width);
+            region.setReferenceHeight(clientRect.height);
+        }
+    }
+
+    private Rectangle tryGetBoundClientRect() {
+        try {
+            if (boundWindow == null || !windowService.isAlive(boundWindow) || windowService.isMinimized(boundWindow)) {
+                return null;
+            }
+            return windowService.getClientRectOnScreen(boundWindow);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private void togglePreviewOverlay() {
@@ -757,6 +791,7 @@ public class MainFrame extends JFrame {
         AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
         Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
         normalizeRegionCoordinateModeIfNeeded(config, clientRect, true);
+        ensureReferenceSizeIfMissing(config, clientRect, false);
         Rectangle targetRect = config.getMonitorRegion().resolveWithin(clientRect);
         Rectangle overlayRect = toOverlayCoordinates(targetRect);
         regionOverlay.showAt(overlayRect);
@@ -779,7 +814,9 @@ public class MainFrame extends JFrame {
         AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
         Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
         normalizeClickCoordinateModeIfNeeded(config, clientRect, true);
-        Point nativePoint = windowService.clientToScreen(boundWindow, config.getClickX(), config.getClickY());
+        ensureReferenceSizeIfMissing(config, clientRect, false);
+        Point clickPoint = config.resolveClickPoint(clientRect);
+        Point nativePoint = windowService.clientToScreen(boundWindow, clickPoint.x, clickPoint.y);
         Point overlayPoint = toOverlayPoint(nativePoint);
         clickOverlay.showAt(overlayPoint);
 
@@ -828,6 +865,28 @@ public class MainFrame extends JFrame {
         return mapped == null ? null : new Point(mapped.x, mapped.y);
     }
 
+    private boolean ensureReferenceSizeIfMissing(AppConfig config,
+                                                 Rectangle clientRect,
+                                                 boolean logWhenApplied) {
+        if (config == null || clientRect == null || clientRect.width <= 0 || clientRect.height <= 0) {
+            return false;
+        }
+        MonitorRegion region = config.getMonitorRegion();
+        if (region == null) {
+            region = new MonitorRegion();
+            config.setMonitorRegion(region);
+        }
+        if (region.hasReferenceSize()) {
+            return false;
+        }
+        region.setReferenceWidth(clientRect.width);
+        region.setReferenceHeight(clientRect.height);
+        if (logWhenApplied) {
+            log("该条件缺少基准分辨率，已自动记录为 " + clientRect.width + "x" + clientRect.height + "（后续按比例缩放）");
+        }
+        return true;
+    }
+
     private boolean normalizeRegionCoordinateModeIfNeeded(AppConfig config,
                                                           Rectangle clientRect,
                                                           boolean applyToForm) {
@@ -835,6 +894,9 @@ public class MainFrame extends JFrame {
             return false;
         }
         MonitorRegion region = config.getMonitorRegion();
+        if (region.hasReferenceSize()) {
+            return false;
+        }
         Rectangle relativeRect = region.resolveWithin(clientRect);
         Rectangle absoluteRect = new Rectangle(
                 region.getX(),
@@ -865,6 +927,10 @@ public class MainFrame extends JFrame {
                                                          Rectangle clientRect,
                                                          boolean applyToForm) {
         if (config == null || clientRect == null) {
+            return false;
+        }
+        MonitorRegion region = config.getMonitorRegion();
+        if (region != null && region.hasReferenceSize()) {
             return false;
         }
         int clickX = config.getClickX();
@@ -1020,6 +1086,7 @@ public class MainFrame extends JFrame {
                 AppConfig runtimeConfig = mergeGlobalWithCondition(currentConfig, rawCondition);
                 normalizeRegionCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
                 normalizeClickCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
+                ensureReferenceSizeIfMissing(runtimeConfig, clientRect, true);
 
                 List<LoadedTemplate> loadedTemplates = loadTemplateImages(runtimeConfig.getTemplatePaths());
                 if (loadedTemplates.isEmpty()) {
@@ -1046,7 +1113,7 @@ public class MainFrame extends JFrame {
 
                 MonitorRule rule = new MonitorRule("image-match-click-" + (i + 1))
                         .setConditionExpression(runtimeConfig.getConditionExpression())
-                        .addAction(new ClickActionStep(actionExecutor));
+                        .addAction(new ClickActionStep(actionExecutor, windowService));
                 for (LoadedTemplate template : loadedTemplates) {
                     rule.addCondition(new ImageTemplateCondition(template.conditionName(), imageMatcher, template.image()));
                 }
@@ -1157,6 +1224,7 @@ public class MainFrame extends JFrame {
             AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
             Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
             normalizeRegionCoordinateModeIfNeeded(config, clientRect, true);
+            ensureReferenceSizeIfMissing(config, clientRect, false);
 
             try {
                 Thread.sleep(80L);
@@ -1274,6 +1342,7 @@ public class MainFrame extends JFrame {
                     AppConfig runtimeConfig = mergeGlobalWithCondition(currentConfig, condition);
                     normalizeRegionCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
                     normalizeClickCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
+                    ensureReferenceSizeIfMissing(runtimeConfig, clientRect, true);
                     normalizedConditions.add(buildConditionConfigFromRuntime(runtimeConfig, resolveConditionName(condition, i)));
                 }
                 currentConfig.setConditions(normalizedConditions);
@@ -1437,6 +1506,8 @@ public class MainFrame extends JFrame {
             region.setY(source.getY());
             region.setWidth(source.getWidth());
             region.setHeight(source.getHeight());
+            region.setReferenceWidth(source.getReferenceWidth());
+            region.setReferenceHeight(source.getReferenceHeight());
         }
         return region;
     }

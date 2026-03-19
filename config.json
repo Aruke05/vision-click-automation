@@ -7,6 +7,8 @@
     "offsetY" : 1020,
     "width" : 165,
     "height" : 151,
+    "referenceWidth" : 2560,
+    "referenceHeight" : 1440,
     "x" : 500,
     "y" : 1020
   },
@@ -27,6 +29,8 @@
       "offsetY" : 1020,
       "width" : 165,
       "height" : 151,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
       "x" : 500,
       "y" : 1020
     },
@@ -43,6 +47,8 @@
       "offsetY" : 1195,
       "width" : 50,
       "height" : 50,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
       "x" : 535,
       "y" : 1195
     },
@@ -59,6 +65,8 @@
       "offsetY" : 1195,
       "width" : 50,
       "height" : 50,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
       "x" : 535,
       "y" : 1195
     },
