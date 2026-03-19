@@ -29,6 +29,7 @@ public interface User32Compat extends StdCallLibrary {
     HDC GetDC(HWND hWnd);
     int ReleaseDC(HWND hWnd, HDC hDC);
     boolean SetForegroundWindow(HWND hWnd);
+    boolean SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, int uFlags);
     boolean PrintWindow(HWND hWnd, HDC hdcBlt, int nFlags);
     HWND GetForegroundWindow();
     boolean GetClientRect(HWND hWnd, RECT rect);

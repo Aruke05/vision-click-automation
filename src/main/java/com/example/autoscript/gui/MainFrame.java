@@ -47,15 +47,11 @@ import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
-import java.awt.GraphicsConfiguration;
-import java.awt.GraphicsDevice;
-import java.awt.GraphicsEnvironment;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
-import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.file.Files;
@@ -127,7 +123,7 @@ public class MainFrame extends JFrame {
     private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
 
     public MainFrame() throws Exception {
-        super("Java 桌面脚本化自动化工具（Windows 示例）");
+        super("Java 桌面脚本化自动化工具");
         this.windowService = new WindowsWindowService();
         this.configService = new ConfigService();
         this.imageMatcher = new OpenCvTemplateMatcher();
@@ -833,43 +829,18 @@ public class MainFrame extends JFrame {
         }
     }
 
-    /**
-     * JNA 拿到的是 native 像素坐标；Swing 顶层窗体在高 DPI/多屏下使用逻辑坐标。
-     * 这里按命中屏幕的缩放进行转换，避免区域框跑到双屏中间。
-     */
     private Rectangle toOverlayCoordinates(Rectangle nativeRect) {
         if (nativeRect == null) {
             return null;
         }
-        GraphicsConfiguration gc = pickGraphicsConfig(nativeRect);
-        if (gc == null) {
-            return new Rectangle(nativeRect);
-        }
-        Rectangle logicalBounds = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-
-        int nativeOriginX = (int) Math.round(logicalBounds.x * sx);
-        int nativeOriginY = (int) Math.round(logicalBounds.y * sy);
-
-        int x = logicalBounds.x + (int) Math.round((nativeRect.x - nativeOriginX) / sx);
-        int y = logicalBounds.y + (int) Math.round((nativeRect.y - nativeOriginY) / sy);
-        int w = Math.max(1, (int) Math.round(nativeRect.width / sx));
-        int h = Math.max(1, (int) Math.round(nativeRect.height / sy));
-        Rectangle converted = new Rectangle(x, y, w, h);
-        if (!intersectsAnyScreen(converted)) {
-            return new Rectangle(nativeRect);
-        }
-        return converted;
+        return new Rectangle(nativeRect);
     }
 
     private Point toOverlayPoint(Point nativePoint) {
         if (nativePoint == null) {
             return null;
         }
-        Rectangle mapped = toOverlayCoordinates(new Rectangle(nativePoint.x, nativePoint.y, 1, 1));
-        return mapped == null ? null : new Point(mapped.x, mapped.y);
+        return new Point(nativePoint);
     }
 
     private boolean ensureReferenceSizeIfMissing(AppConfig config,
@@ -970,76 +941,6 @@ public class MainFrame extends JFrame {
         }
         Rectangle c = a.intersection(b);
         return c.width > 0 && c.height > 0;
-    }
-
-    private GraphicsConfiguration pickGraphicsConfig(Rectangle nativeRect) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return getGraphicsConfiguration();
-        }
-        Point center = new Point(
-                nativeRect.x + Math.max(0, nativeRect.width / 2),
-                nativeRect.y + Math.max(0, nativeRect.height / 2)
-        );
-        GraphicsConfiguration best = null;
-        long bestDistance = Long.MAX_VALUE;
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            Rectangle nativeBounds = toNativeBounds(gc);
-            if (nativeBounds.contains(center)) {
-                return gc;
-            }
-            long distance = distanceToRect(center, nativeBounds);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = gc;
-            }
-        }
-        return best != null ? best : getGraphicsConfiguration();
-    }
-
-    private Rectangle toNativeBounds(GraphicsConfiguration gc) {
-        Rectangle logical = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-        return new Rectangle(
-                (int) Math.round(logical.x * sx),
-                (int) Math.round(logical.y * sy),
-                Math.max(1, (int) Math.round(logical.width * sx)),
-                Math.max(1, (int) Math.round(logical.height * sy))
-        );
-    }
-
-    private long distanceToRect(Point point, Rectangle rect) {
-        int dx = 0;
-        if (point.x < rect.x) {
-            dx = rect.x - point.x;
-        } else if (point.x > rect.x + rect.width) {
-            dx = point.x - (rect.x + rect.width);
-        }
-
-        int dy = 0;
-        if (point.y < rect.y) {
-            dy = rect.y - point.y;
-        } else if (point.y > rect.y + rect.height) {
-            dy = point.y - (rect.y + rect.height);
-        }
-        return (long) dx * dx + (long) dy * dy;
-    }
-
-    private boolean intersectsAnyScreen(Rectangle rect) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return true;
-        }
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            if (gc != null && rect.intersects(gc.getBounds())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private void startMonitoring() {

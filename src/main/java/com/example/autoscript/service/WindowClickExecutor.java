@@ -9,15 +9,10 @@ import com.sun.jna.platform.win32.WinDef.POINT;
 import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinDef.WPARAM;
 
-import java.awt.GraphicsConfiguration;
-import java.awt.GraphicsDevice;
-import java.awt.GraphicsEnvironment;
-import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Robot;
 import java.awt.event.InputEvent;
-import java.awt.geom.AffineTransform;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -150,16 +145,24 @@ public class WindowClickExecutor implements ActionExecutor {
     }
 
     private void clickByRobot(Point nativeScreenPoint) {
-        Point awtPoint = toAwtPoint(nativeScreenPoint);
+        if (nativeScreenPoint == null) {
+            throw new IllegalArgumentException("点击坐标不能为空");
+        }
         Point current = null;
         for (int i = 0; i <= MOUSE_VERIFY_RETRY; i++) {
-            robot.mouseMove(awtPoint.x, awtPoint.y);
-            current = getMouseLocation();
-            if (current == null) {
-                break;
+            try {
+                User32Compat.INSTANCE.SetCursorPos(nativeScreenPoint.x, nativeScreenPoint.y);
+            } catch (Exception ignored) {
             }
-            int dx = Math.abs(current.x - awtPoint.x);
-            int dy = Math.abs(current.y - awtPoint.y);
+            current = queryCursorPosition();
+            if (current == null) {
+                if (i < MOUSE_VERIFY_RETRY) {
+                    robot.delay(12);
+                }
+                continue;
+            }
+            int dx = Math.abs(current.x - nativeScreenPoint.x);
+            int dy = Math.abs(current.y - nativeScreenPoint.y);
             if (dx <= MOUSE_VERIFY_TOLERANCE_PX && dy <= MOUSE_VERIFY_TOLERANCE_PX) {
                 break;
             }
@@ -168,11 +171,10 @@ public class WindowClickExecutor implements ActionExecutor {
             }
         }
         if (current != null) {
-            int dx = Math.abs(current.x - awtPoint.x);
-            int dy = Math.abs(current.y - awtPoint.y);
+            int dx = Math.abs(current.x - nativeScreenPoint.x);
+            int dy = Math.abs(current.y - nativeScreenPoint.y);
             if (dx > MOUSE_VERIFY_TOLERANCE_PX || dy > MOUSE_VERIFY_TOLERANCE_PX) {
                 throw new IllegalStateException("鼠标移动失败: nativeTarget=(" + nativeScreenPoint.x + "," + nativeScreenPoint.y
-                        + "), awtTarget=(" + awtPoint.x + "," + awtPoint.y
                         + "), actual=(" + current.x + "," + current.y + ")");
             }
         }
@@ -180,109 +182,6 @@ public class WindowClickExecutor implements ActionExecutor {
         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
         robot.delay(50);
         robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
-    }
-
-    private Point toAwtPoint(Point nativePoint) {
-        if (nativePoint == null) {
-            throw new IllegalArgumentException("点击坐标不能为空");
-        }
-        GraphicsConfiguration gc = pickGraphicsConfig(nativePoint);
-        if (gc == null) {
-            return new Point(nativePoint);
-        }
-        Rectangle logicalBounds = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-
-        int nativeOriginX = (int) Math.round(logicalBounds.x * sx);
-        int nativeOriginY = (int) Math.round(logicalBounds.y * sy);
-
-        int x = logicalBounds.x + (int) Math.round((nativePoint.x - nativeOriginX) / sx);
-        int y = logicalBounds.y + (int) Math.round((nativePoint.y - nativeOriginY) / sy);
-        Point converted = new Point(x, y);
-        if (!intersectsAnyScreen(converted)) {
-            return new Point(nativePoint);
-        }
-        return converted;
-    }
-
-    private GraphicsConfiguration pickGraphicsConfig(Point nativePoint) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return null;
-        }
-        GraphicsConfiguration best = null;
-        long bestDistance = Long.MAX_VALUE;
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            Rectangle nativeBounds = toNativeBounds(gc);
-            if (nativeBounds.contains(nativePoint)) {
-                return gc;
-            }
-            long distance = distanceToRect(nativePoint, nativeBounds);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = gc;
-            }
-        }
-        return best;
-    }
-
-    private Rectangle toNativeBounds(GraphicsConfiguration gc) {
-        Rectangle logical = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-        return new Rectangle(
-                (int) Math.round(logical.x * sx),
-                (int) Math.round(logical.y * sy),
-                Math.max(1, (int) Math.round(logical.width * sx)),
-                Math.max(1, (int) Math.round(logical.height * sy))
-        );
-    }
-
-    private long distanceToRect(Point point, Rectangle rect) {
-        int dx = 0;
-        if (point.x < rect.x) {
-            dx = rect.x - point.x;
-        } else if (point.x > rect.x + rect.width) {
-            dx = point.x - (rect.x + rect.width);
-        }
-
-        int dy = 0;
-        if (point.y < rect.y) {
-            dy = rect.y - point.y;
-        } else if (point.y > rect.y + rect.height) {
-            dy = point.y - (rect.y + rect.height);
-        }
-        return (long) dx * dx + (long) dy * dy;
-    }
-
-    private boolean intersectsAnyScreen(Point point) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return true;
-        }
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            if (gc != null && gc.getBounds().contains(point)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private Point getMouseLocation() {
-        try {
-            java.awt.PointerInfo pointerInfo = MouseInfo.getPointerInfo();
-            if (pointerInfo == null || pointerInfo.getLocation() == null) {
-                return null;
-            }
-            return pointerInfo.getLocation();
-        } catch (Exception ignored) {
-            return null;
-        }
     }
 
     private Point queryCursorPosition() {
@@ -293,7 +192,7 @@ public class WindowClickExecutor implements ActionExecutor {
             }
         } catch (Exception ignored) {
         }
-        return getMouseLocation();
+        return null;
     }
 
     private void restoreCursorPosition(Point position) {
@@ -301,15 +200,7 @@ public class WindowClickExecutor implements ActionExecutor {
             return;
         }
         try {
-            boolean restoredByNative = User32Compat.INSTANCE.SetCursorPos(position.x, position.y);
-            if (restoredByNative) {
-                return;
-            }
-        } catch (Exception ignored) {
-        }
-        try {
-            Point awtPoint = toAwtPoint(position);
-            robot.mouseMove(awtPoint.x, awtPoint.y);
+            User32Compat.INSTANCE.SetCursorPos(position.x, position.y);
         } catch (Exception ignored) {
         }
     }

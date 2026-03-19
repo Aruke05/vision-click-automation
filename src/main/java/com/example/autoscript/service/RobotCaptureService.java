@@ -13,14 +13,8 @@ import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinGDI;
 import com.sun.jna.platform.win32.WinNT.HANDLE;
 
-import java.awt.GraphicsConfiguration;
-import java.awt.GraphicsDevice;
-import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
-import java.awt.Point;
 import java.awt.Rectangle;
-import java.awt.Robot;
-import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.awt.image.DirectColorModel;
@@ -32,6 +26,7 @@ public class RobotCaptureService implements CaptureService {
 
     private static final int PW_CLIENTONLY = 0x00000001;
     private static final int PW_RENDERFULLCONTENT = 0x00000002;
+    private static final int SRCCOPY = 0x00CC0020;
     private static final DirectColorModel SCREENSHOT_COLOR_MODEL = new DirectColorModel(24, 0x00FF0000, 0x0000FF00, 0x000000FF);
     private static final int[] SCREENSHOT_BAND_MASKS = {
             SCREENSHOT_COLOR_MODEL.getRedMask(),
@@ -39,13 +34,10 @@ public class RobotCaptureService implements CaptureService {
             SCREENSHOT_COLOR_MODEL.getBlueMask()
     };
 
-    private final Robot robot;
     private final WindowService windowService;
 
     public RobotCaptureService(WindowService windowService) throws Exception {
-        this.robot = new Robot();
         this.windowService = windowService;
-        this.robot.setAutoDelay(10);
     }
 
     @Override
@@ -68,8 +60,64 @@ public class RobotCaptureService implements CaptureService {
     }
 
     private BufferedImage captureByScreen(Rectangle captureRect) {
-        Rectangle awtCaptureRect = toAwtCoordinates(captureRect);
-        return robot.createScreenCapture(awtCaptureRect);
+        return captureDesktopRect(captureRect);
+    }
+
+    private BufferedImage captureDesktopRect(Rectangle captureRect) {
+        if (captureRect == null || captureRect.width <= 0 || captureRect.height <= 0) {
+            throw new IllegalArgumentException("截图区域无效: " + captureRect);
+        }
+
+        HDC desktopDc = null;
+        HDC memoryDc = null;
+        HBITMAP bitmap = null;
+        HANDLE oldBitmap = null;
+        try {
+            desktopDc = User32Compat.INSTANCE.GetDC((HWND) null);
+            if (desktopDc == null) {
+                throw new IllegalStateException("GetDC(Desktop) 失败, error=" + Native.getLastError());
+            }
+            memoryDc = GDI32.INSTANCE.CreateCompatibleDC(desktopDc);
+            if (memoryDc == null) {
+                throw new IllegalStateException("CreateCompatibleDC 失败, error=" + Native.getLastError());
+            }
+            bitmap = GDI32.INSTANCE.CreateCompatibleBitmap(desktopDc, captureRect.width, captureRect.height);
+            if (bitmap == null) {
+                throw new IllegalStateException("CreateCompatibleBitmap 失败, error=" + Native.getLastError());
+            }
+            oldBitmap = GDI32.INSTANCE.SelectObject(memoryDc, bitmap);
+            if (oldBitmap == null) {
+                throw new IllegalStateException("SelectObject 失败, error=" + Native.getLastError());
+            }
+            boolean copied = GDI32.INSTANCE.BitBlt(
+                    memoryDc,
+                    0,
+                    0,
+                    captureRect.width,
+                    captureRect.height,
+                    desktopDc,
+                    captureRect.x,
+                    captureRect.y,
+                    SRCCOPY
+            );
+            if (!copied) {
+                throw new IllegalStateException("BitBlt 失败, error=" + Native.getLastError());
+            }
+            return readBitmapToImage(desktopDc, bitmap, captureRect.width, captureRect.height);
+        } finally {
+            if (oldBitmap != null && memoryDc != null) {
+                GDI32.INSTANCE.SelectObject(memoryDc, oldBitmap);
+            }
+            if (bitmap != null) {
+                GDI32.INSTANCE.DeleteObject(bitmap);
+            }
+            if (memoryDc != null) {
+                GDI32.INSTANCE.DeleteDC(memoryDc);
+            }
+            if (desktopDc != null) {
+                User32Compat.INSTANCE.ReleaseDC((HWND) null, desktopDc);
+            }
+        }
     }
 
     private BufferedImage captureByWindowHandle(WindowInfo window, Rectangle captureRect) {
@@ -172,28 +220,7 @@ public class RobotCaptureService implements CaptureService {
             if (!printed) {
                 return null;
             }
-
-            WinGDI.BITMAPINFO bitmapInfo = new WinGDI.BITMAPINFO();
-            bitmapInfo.bmiHeader.biWidth = width;
-            bitmapInfo.bmiHeader.biHeight = -height;
-            bitmapInfo.bmiHeader.biPlanes = 1;
-            bitmapInfo.bmiHeader.biBitCount = 32;
-            bitmapInfo.bmiHeader.biCompression = WinGDI.BI_RGB;
-
-            int pixelCount = width * height;
-            Memory memory = new Memory((long) pixelCount * 4L);
-            int lines = GDI32.INSTANCE.GetDIBits(windowDc, bitmap, 0, height, memory, bitmapInfo, WinGDI.DIB_RGB_COLORS);
-            if (lines <= 0) {
-                throw new IllegalStateException("GetDIBits 失败, error=" + Native.getLastError());
-            }
-
-            DataBufferInt dataBuffer = new DataBufferInt(memory.getIntArray(0L, pixelCount), pixelCount);
-            return new BufferedImage(
-                    SCREENSHOT_COLOR_MODEL,
-                    Raster.createPackedRaster(dataBuffer, width, height, width, SCREENSHOT_BAND_MASKS, null),
-                    false,
-                    null
-            );
+            return readBitmapToImage(windowDc, bitmap, width, height);
         } finally {
             if (oldBitmap != null && memoryDc != null) {
                 GDI32.INSTANCE.SelectObject(memoryDc, oldBitmap);
@@ -208,6 +235,30 @@ public class RobotCaptureService implements CaptureService {
                 User32Compat.INSTANCE.ReleaseDC(hWnd, windowDc);
             }
         }
+    }
+
+    private BufferedImage readBitmapToImage(HDC sourceDc, HBITMAP bitmap, int width, int height) {
+        WinGDI.BITMAPINFO bitmapInfo = new WinGDI.BITMAPINFO();
+        bitmapInfo.bmiHeader.biWidth = width;
+        bitmapInfo.bmiHeader.biHeight = -height;
+        bitmapInfo.bmiHeader.biPlanes = 1;
+        bitmapInfo.bmiHeader.biBitCount = 32;
+        bitmapInfo.bmiHeader.biCompression = WinGDI.BI_RGB;
+
+        int pixelCount = width * height;
+        Memory memory = new Memory((long) pixelCount * 4L);
+        int lines = GDI32.INSTANCE.GetDIBits(sourceDc, bitmap, 0, height, memory, bitmapInfo, WinGDI.DIB_RGB_COLORS);
+        if (lines <= 0) {
+            throw new IllegalStateException("GetDIBits 失败, error=" + Native.getLastError());
+        }
+
+        DataBufferInt dataBuffer = new DataBufferInt(memory.getIntArray(0L, pixelCount), pixelCount);
+        return new BufferedImage(
+                SCREENSHOT_COLOR_MODEL,
+                Raster.createPackedRaster(dataBuffer, width, height, width, SCREENSHOT_BAND_MASKS, null),
+                false,
+                null
+        );
     }
 
     private BufferedImage safeSubImage(BufferedImage source, int x, int y, int width, int height, String sourceName) {
@@ -230,97 +281,4 @@ public class RobotCaptureService implements CaptureService {
         return copy;
     }
 
-    private Rectangle toAwtCoordinates(Rectangle nativeRect) {
-        GraphicsConfiguration gc = pickGraphicsConfig(nativeRect);
-        if (gc == null) {
-            return new Rectangle(nativeRect);
-        }
-        Rectangle logicalBounds = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-
-        int nativeOriginX = (int) Math.round(logicalBounds.x * sx);
-        int nativeOriginY = (int) Math.round(logicalBounds.y * sy);
-
-        int x = logicalBounds.x + (int) Math.round((nativeRect.x - nativeOriginX) / sx);
-        int y = logicalBounds.y + (int) Math.round((nativeRect.y - nativeOriginY) / sy);
-        int w = Math.max(1, (int) Math.round(nativeRect.width / sx));
-        int h = Math.max(1, (int) Math.round(nativeRect.height / sy));
-        Rectangle converted = new Rectangle(x, y, w, h);
-        if (!intersectsAnyScreen(converted)) {
-            return new Rectangle(nativeRect);
-        }
-        return converted;
-    }
-
-    private GraphicsConfiguration pickGraphicsConfig(Rectangle nativeRect) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return null;
-        }
-        Point center = new Point(
-                nativeRect.x + Math.max(0, nativeRect.width / 2),
-                nativeRect.y + Math.max(0, nativeRect.height / 2)
-        );
-        GraphicsConfiguration best = null;
-        long bestDistance = Long.MAX_VALUE;
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            Rectangle nativeBounds = toNativeBounds(gc);
-            if (nativeBounds.contains(center)) {
-                return gc;
-            }
-            long distance = distanceToRect(center, nativeBounds);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                best = gc;
-            }
-        }
-        return best;
-    }
-
-    private Rectangle toNativeBounds(GraphicsConfiguration gc) {
-        Rectangle logical = gc.getBounds();
-        AffineTransform tx = gc.getDefaultTransform();
-        double sx = tx.getScaleX() <= 0.0D ? 1.0D : tx.getScaleX();
-        double sy = tx.getScaleY() <= 0.0D ? 1.0D : tx.getScaleY();
-        return new Rectangle(
-                (int) Math.round(logical.x * sx),
-                (int) Math.round(logical.y * sy),
-                Math.max(1, (int) Math.round(logical.width * sx)),
-                Math.max(1, (int) Math.round(logical.height * sy))
-        );
-    }
-
-    private long distanceToRect(Point point, Rectangle rect) {
-        int dx = 0;
-        if (point.x < rect.x) {
-            dx = rect.x - point.x;
-        } else if (point.x > rect.x + rect.width) {
-            dx = point.x - (rect.x + rect.width);
-        }
-
-        int dy = 0;
-        if (point.y < rect.y) {
-            dy = rect.y - point.y;
-        } else if (point.y > rect.y + rect.height) {
-            dy = point.y - (rect.y + rect.height);
-        }
-        return (long) dx * dx + (long) dy * dy;
-    }
-
-    private boolean intersectsAnyScreen(Rectangle rect) {
-        GraphicsDevice[] devices = GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices();
-        if (devices == null || devices.length == 0) {
-            return true;
-        }
-        for (GraphicsDevice device : devices) {
-            GraphicsConfiguration gc = device.getDefaultConfiguration();
-            if (gc != null && rect.intersects(gc.getBounds())) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

@@ -1,5 +1,10 @@
 package com.example.autoscript.gui;
 
+import com.example.autoscript.service.User32Compat;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.platform.win32.WinDef.HWND;
+
 import javax.swing.JWindow;
 import java.awt.Color;
 import java.awt.Rectangle;
@@ -11,6 +16,8 @@ public class RegionOverlayWindow {
 
     private static final int BORDER_WIDTH = 3;
     private static final Color BORDER_COLOR = new Color(255, 78, 66);
+    private static final int SWP_NOZORDER = 0x0004;
+    private static final int SWP_NOACTIVATE = 0x0010;
 
     private final List<JWindow> edgeWindows = new ArrayList<>(4);
 
@@ -38,18 +45,10 @@ public class RegionOverlayWindow {
         JWindow bottom = edgeWindows.get(2);
         JWindow left = edgeWindows.get(3);
 
-        top.setBounds(x, y, width, line);
-        bottom.setBounds(x, y + height - line, width, line);
-        left.setBounds(x, y, line, height);
-        right.setBounds(x + width - line, y, line, height);
-
-        for (JWindow edge : edgeWindows) {
-            if (!edge.isVisible()) {
-                edge.setVisible(true);
-            }
-            edge.toFront();
-            edge.repaint();
-        }
+        showWindowAt(top, x, y, width, line);
+        showWindowAt(bottom, x, y + height - line, width, line);
+        showWindowAt(left, x, y, line, height);
+        showWindowAt(right, x + width - line, y, line, height);
     }
 
     public void hideOverlay() {
@@ -76,5 +75,37 @@ public class RegionOverlayWindow {
         edge.setBackground(BORDER_COLOR);
         edge.getContentPane().setBackground(BORDER_COLOR);
         return edge;
+    }
+
+    private void showWindowAt(JWindow window, int x, int y, int width, int height) {
+        if (!window.isVisible()) {
+            window.setVisible(true);
+        }
+        if (!setNativeBounds(window, x, y, width, height)) {
+            window.setBounds(x, y, width, height);
+        }
+        window.toFront();
+        window.repaint();
+    }
+
+    private boolean setNativeBounds(JWindow window, int x, int y, int width, int height) {
+        try {
+            Pointer pointer = Native.getComponentPointer(window);
+            if (pointer == null || Pointer.nativeValue(pointer) == 0L) {
+                return false;
+            }
+            HWND hWnd = new HWND(pointer);
+            return User32Compat.INSTANCE.SetWindowPos(
+                    hWnd,
+                    null,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE
+            );
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 }

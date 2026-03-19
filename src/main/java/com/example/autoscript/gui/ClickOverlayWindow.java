@@ -1,5 +1,10 @@
 package com.example.autoscript.gui;
 
+import com.example.autoscript.service.User32Compat;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.platform.win32.WinDef.HWND;
+
 import javax.swing.JWindow;
 import java.awt.Color;
 import java.awt.Point;
@@ -13,6 +18,8 @@ public class ClickOverlayWindow {
     private static final int THICKNESS = 2;
     private static final int CENTER_SIZE = 6;
     private static final Color COLOR = new Color(66, 196, 255);
+    private static final int SWP_NOZORDER = 0x0004;
+    private static final int SWP_NOACTIVATE = 0x0010;
 
     private final List<JWindow> markerWindows = new ArrayList<>(3);
 
@@ -36,17 +43,9 @@ public class ClickOverlayWindow {
         int centerHalf = CENTER_SIZE / 2;
         int halfThickness = THICKNESS / 2;
 
-        hLine.setBounds(point.x - half, point.y - halfThickness, CROSS_SIZE, THICKNESS);
-        vLine.setBounds(point.x - halfThickness, point.y - half, THICKNESS, CROSS_SIZE);
-        center.setBounds(point.x - centerHalf, point.y - centerHalf, CENTER_SIZE, CENTER_SIZE);
-
-        for (JWindow window : markerWindows) {
-            if (!window.isVisible()) {
-                window.setVisible(true);
-            }
-            window.toFront();
-            window.repaint();
-        }
+        showWindowAt(hLine, point.x - half, point.y - halfThickness, CROSS_SIZE, THICKNESS);
+        showWindowAt(vLine, point.x - halfThickness, point.y - half, THICKNESS, CROSS_SIZE);
+        showWindowAt(center, point.x - centerHalf, point.y - centerHalf, CENTER_SIZE, CENTER_SIZE);
     }
 
     public void hide() {
@@ -73,5 +72,37 @@ public class ClickOverlayWindow {
         window.setBackground(COLOR);
         window.getContentPane().setBackground(COLOR);
         return window;
+    }
+
+    private void showWindowAt(JWindow window, int x, int y, int width, int height) {
+        if (!window.isVisible()) {
+            window.setVisible(true);
+        }
+        if (!setNativeBounds(window, x, y, width, height)) {
+            window.setBounds(x, y, width, height);
+        }
+        window.toFront();
+        window.repaint();
+    }
+
+    private boolean setNativeBounds(JWindow window, int x, int y, int width, int height) {
+        try {
+            Pointer pointer = Native.getComponentPointer(window);
+            if (pointer == null || Pointer.nativeValue(pointer) == 0L) {
+                return false;
+            }
+            HWND hWnd = new HWND(pointer);
+            return User32Compat.INSTANCE.SetWindowPos(
+                    hWnd,
+                    null,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE
+            );
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 }
