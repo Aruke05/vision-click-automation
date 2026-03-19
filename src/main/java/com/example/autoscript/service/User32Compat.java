@@ -38,5 +38,7 @@ public interface User32Compat extends StdCallLibrary {
     boolean ClientToScreen(HWND hWnd, POINT lpPoint);
     boolean GetCursorPos(POINT lpPoint);
     boolean SetCursorPos(int x, int y);
+    boolean GetClipCursor(RECT lpRect);
+    boolean ClipCursor(RECT lpRect);
     boolean BlockInput(boolean fBlockIt);
 }

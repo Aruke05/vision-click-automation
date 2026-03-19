@@ -6,6 +6,7 @@ import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.LPARAM;
 import com.sun.jna.platform.win32.WinDef.POINT;
+import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinDef.WPARAM;
 
 import java.awt.GraphicsConfiguration;
@@ -18,6 +19,7 @@ import java.awt.Robot;
 import java.awt.event.InputEvent;
 import java.awt.geom.AffineTransform;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class WindowClickExecutor implements ActionExecutor {
 
@@ -59,7 +61,7 @@ public class WindowClickExecutor implements ActionExecutor {
 
         HWND previousForeground = User32Compat.INSTANCE.GetForegroundWindow();
         Point previousCursor = queryCursorPosition();
-        boolean inputLocked = lockUserInput();
+        InputGuard inputGuard = InputGuard.acquire(previousCursor);
         try {
             Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
             windowService.restoreIfMinimized(window);
@@ -76,9 +78,7 @@ public class WindowClickExecutor implements ActionExecutor {
         } finally {
             restoreForegroundWindow(previousForeground);
             restoreCursorPosition(previousCursor);
-            if (inputLocked) {
-                unlockUserInput();
-            }
+            inputGuard.release();
         }
     }
 
@@ -285,21 +285,6 @@ public class WindowClickExecutor implements ActionExecutor {
         }
     }
 
-    private boolean lockUserInput() {
-        try {
-            return User32Compat.INSTANCE.BlockInput(true);
-        } catch (Exception ignored) {
-            return false;
-        }
-    }
-
-    private void unlockUserInput() {
-        try {
-            User32Compat.INSTANCE.BlockInput(false);
-        } catch (Exception ignored) {
-        }
-    }
-
     private Point queryCursorPosition() {
         try {
             POINT point = new POINT();
@@ -342,6 +327,135 @@ public class WindowClickExecutor implements ActionExecutor {
                 }
             }
         } catch (Exception ignored) {
+        }
+    }
+
+    private static final class InputGuard {
+        private static final int WATCHDOG_INTERVAL_MS = 6;
+        private static final int WATCHDOG_JOIN_TIMEOUT_MS = 100;
+
+        private final Point lockedPoint;
+        private final AtomicBoolean active = new AtomicBoolean(false);
+        private RECT previousClipRect;
+        private boolean hasPreviousClipRect = false;
+        private boolean inputBlocked = false;
+        private boolean cursorClipped = false;
+        private Thread watchdogThread;
+
+        private InputGuard(Point lockedPoint) {
+            this.lockedPoint = lockedPoint == null ? null : new Point(lockedPoint);
+        }
+
+        static InputGuard acquire(Point lockedPoint) {
+            InputGuard guard = new InputGuard(lockedPoint);
+            guard.lock();
+            return guard;
+        }
+
+        void release() {
+            stopWatchdog();
+            restoreClipCursor();
+            if (inputBlocked) {
+                tryBlockInput(false);
+            }
+        }
+
+        private void lock() {
+            captureCurrentClipCursor();
+            inputBlocked = tryBlockInput(true);
+            if (lockedPoint != null) {
+                cursorClipped = tryClipCursor(lockedPoint.x, lockedPoint.y);
+                startWatchdog();
+            }
+        }
+
+        private void captureCurrentClipCursor() {
+            try {
+                RECT current = new RECT();
+                if (User32Compat.INSTANCE.GetClipCursor(current)) {
+                    hasPreviousClipRect = true;
+                    previousClipRect = new RECT();
+                    previousClipRect.left = current.left;
+                    previousClipRect.top = current.top;
+                    previousClipRect.right = current.right;
+                    previousClipRect.bottom = current.bottom;
+                }
+            } catch (Exception ignored) {
+                hasPreviousClipRect = false;
+                previousClipRect = null;
+            }
+        }
+
+        private boolean tryBlockInput(boolean block) {
+            try {
+                return User32Compat.INSTANCE.BlockInput(block);
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        private boolean tryClipCursor(int x, int y) {
+            try {
+                RECT lockRect = new RECT();
+                lockRect.left = x;
+                lockRect.top = y;
+                lockRect.right = x + 1;
+                lockRect.bottom = y + 1;
+                return User32Compat.INSTANCE.ClipCursor(lockRect);
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        private void restoreClipCursor() {
+            if (!cursorClipped) {
+                return;
+            }
+            try {
+                if (hasPreviousClipRect && previousClipRect != null) {
+                    User32Compat.INSTANCE.ClipCursor(previousClipRect);
+                } else {
+                    User32Compat.INSTANCE.ClipCursor(null);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        private void startWatchdog() {
+            if (lockedPoint == null) {
+                return;
+            }
+            active.set(true);
+            watchdogThread = new Thread(() -> {
+                while (active.get()) {
+                    try {
+                        User32Compat.INSTANCE.SetCursorPos(lockedPoint.x, lockedPoint.y);
+                    } catch (Exception ignored) {
+                    }
+                    try {
+                        Thread.sleep(WATCHDOG_INTERVAL_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }, "mouse-input-guard");
+            watchdogThread.setDaemon(true);
+            watchdogThread.start();
+        }
+
+        private void stopWatchdog() {
+            active.set(false);
+            if (watchdogThread == null) {
+                return;
+            }
+            watchdogThread.interrupt();
+            try {
+                watchdogThread.join(WATCHDOG_JOIN_TIMEOUT_MS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            watchdogThread = null;
         }
     }
 }
