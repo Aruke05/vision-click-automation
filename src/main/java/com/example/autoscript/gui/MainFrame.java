@@ -122,6 +122,9 @@ public class MainFrame extends JFrame {
     private JSplitPane configVerticalSplitPane;
     private boolean logPanelCollapsed = false;
     private int lastLogDividerLocation = -1;
+    private final Path projectRootPath = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+    private final Path scriptDirPath = projectRootPath.resolve("script").toAbsolutePath().normalize();
+    private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
 
     public MainFrame() throws Exception {
         super("Java 桌面脚本化自动化工具（Windows 示例）");
@@ -458,7 +461,7 @@ public class MainFrame extends JFrame {
     }
 
     private void chooseTemplates() {
-        JFileChooser chooser = new JFileChooser();
+        JFileChooser chooser = createCapturesChooser();
         chooser.setMultiSelectionEnabled(true);
         chooser.setFileFilter(new FileNameExtensionFilter("图片文件", "png", "jpg", "jpeg", "bmp"));
         int result = chooser.showOpenDialog(this);
@@ -471,11 +474,11 @@ public class MainFrame extends JFrame {
         if (files != null && files.length > 0) {
             for (File file : files) {
                 if (file != null) {
-                    paths.add(file.getAbsolutePath());
+                    paths.add(normalizeTemplatePath(file.getAbsolutePath()));
                 }
             }
         } else if (chooser.getSelectedFile() != null) {
-            paths.add(chooser.getSelectedFile().getAbsolutePath());
+            paths.add(normalizeTemplatePath(chooser.getSelectedFile().getAbsolutePath()));
         }
 
         if (paths.isEmpty()) {
@@ -629,7 +632,7 @@ public class MainFrame extends JFrame {
             thresholdSpinner.setValue((int) Math.round(source.getThreshold() * 100.0D));
             clickXSpinner.setValue(source.getClickX());
             clickYSpinner.setValue(source.getClickY());
-            templatePathsArea.setText(String.join(System.lineSeparator(), source.getTemplatePaths()));
+            templatePathsArea.setText(String.join(System.lineSeparator(), normalizeTemplatePaths(source.getTemplatePaths())));
             String expression = source.getConditionExpression();
             if ((expression == null || expression.isBlank()) && !source.getTemplatePaths().isEmpty()) {
                 expression = buildDefaultConditionExpression(source.getTemplatePaths().size());
@@ -1182,20 +1185,21 @@ public class MainFrame extends JFrame {
         List<LoadedTemplate> templates = new ArrayList<>();
         int index = 1;
         for (String path : templatePaths) {
-            File file = new File(path);
+            Path resolvedPath = resolveTemplatePath(path);
+            File file = resolvedPath.toFile();
             if (!file.exists()) {
-                throw new IllegalArgumentException("模板文件不存在: " + file.getAbsolutePath());
+                throw new IllegalArgumentException("模板文件不存在: " + resolvedPath);
             }
             BufferedImage image;
             try {
                 image = ImageIO.read(file);
             } catch (Exception e) {
-                throw new IllegalArgumentException("模板图读取失败: " + file.getAbsolutePath(), e);
+                throw new IllegalArgumentException("模板图读取失败: " + resolvedPath, e);
             }
             if (image == null) {
-                throw new IllegalArgumentException("无法读取图片: " + file.getAbsolutePath());
+                throw new IllegalArgumentException("无法读取图片: " + resolvedPath);
             }
-            templates.add(new LoadedTemplate("C" + index, file.getAbsolutePath(), image));
+            templates.add(new LoadedTemplate("C" + index, normalizeTemplatePath(resolvedPath.toString()), image));
             index++;
         }
         return templates;
@@ -1238,8 +1242,7 @@ public class MainFrame extends JFrame {
 
             BufferedImage image = captureService.capture(boundWindow, config.getMonitorRegion(), config.getCaptureMode());
 
-            Path projectRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
-            Path captureDir = projectRoot.resolve("captures");
+            Path captureDir = capturesDirPath;
             Files.createDirectories(captureDir);
             String filename = "region-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")) + ".png";
             Path output = captureDir.resolve(filename);
@@ -1373,7 +1376,7 @@ public class MainFrame extends JFrame {
     private AppConfig readConfigFromForm() {
         applyEditorToSelectedConditionQuietly();
         AppConfig config = readGlobalConfigFromForm();
-        List<ConditionConfig> conditions = conditionTableModel.getConditions();
+        List<ConditionConfig> conditions = normalizeConditionTemplatePaths(conditionTableModel.getConditions());
         if (conditions.isEmpty()) {
             ConditionConfig editor = readConditionFromEditor();
             if (!editor.getTemplatePaths().isEmpty() || !editor.getConditionExpression().isBlank()) {
@@ -1405,7 +1408,7 @@ public class MainFrame extends JFrame {
         String[] parts = rawText.split("[\\r\\n;]+");
         LinkedHashSet<String> unique = new LinkedHashSet<>();
         for (String part : parts) {
-            String normalized = part == null ? "" : part.trim();
+            String normalized = normalizeTemplatePath(part);
             if (!normalized.isBlank()) {
                 unique.add(normalized);
             }
@@ -1450,7 +1453,7 @@ public class MainFrame extends JFrame {
         startHotkeyField.setText(normalizedStart);
         stopHotkeyField.setText(normalizedStop);
 
-        List<ConditionConfig> conditions = config.getConditions();
+        List<ConditionConfig> conditions = normalizeConditionTemplatePaths(config.getConditions());
         if (conditions.isEmpty()) {
             ConditionConfig defaultCondition = new ConditionConfig();
             defaultCondition.setName("条件1");
@@ -1523,10 +1526,10 @@ public class MainFrame extends JFrame {
         try {
             applyEditorToSelectedConditionQuietly();
             AppConfig config = readConfigFromForm();
-            JFileChooser chooser = new JFileChooser();
+            JFileChooser chooser = createScriptChooser();
             chooser.setDialogTitle("导出方案");
             chooser.setFileFilter(new FileNameExtensionFilter("JSON 文件", "json"));
-            chooser.setSelectedFile(new File("auto-script-profile.json"));
+            chooser.setSelectedFile(scriptDirPath.resolve("auto-script-profile.json").toFile());
             int result = chooser.showSaveDialog(this);
             if (result != JFileChooser.APPROVE_OPTION || chooser.getSelectedFile() == null) {
                 return;
@@ -1545,7 +1548,7 @@ public class MainFrame extends JFrame {
 
     private void importProfile() {
         try {
-            JFileChooser chooser = new JFileChooser();
+            JFileChooser chooser = createScriptChooser();
             chooser.setDialogTitle("载入方案");
             chooser.setFileFilter(new FileNameExtensionFilter("JSON 文件", "json"));
             int result = chooser.showOpenDialog(this);
@@ -1648,6 +1651,90 @@ public class MainFrame extends JFrame {
             regionOverlay.dispose();
             clickOverlay.dispose();
         }
+    }
+
+    private JFileChooser createScriptChooser() {
+        return createChooserAt(scriptDirPath);
+    }
+
+    private JFileChooser createCapturesChooser() {
+        return createChooserAt(capturesDirPath);
+    }
+
+    private JFileChooser createChooserAt(Path targetDir) {
+        Path directory = targetDir == null ? projectRootPath : targetDir;
+        try {
+            Files.createDirectories(directory);
+        } catch (Exception ignored) {
+            directory = projectRootPath;
+        }
+        JFileChooser chooser = new JFileChooser(directory.toFile());
+        chooser.setCurrentDirectory(directory.toFile());
+        return chooser;
+    }
+
+    private List<ConditionConfig> normalizeConditionTemplatePaths(List<ConditionConfig> source) {
+        List<ConditionConfig> normalized = new ArrayList<>();
+        if (source == null) {
+            return normalized;
+        }
+        for (ConditionConfig condition : source) {
+            if (condition == null) {
+                continue;
+            }
+            ConditionConfig copied = new ConditionConfig(condition);
+            copied.setTemplatePaths(normalizeTemplatePaths(copied.getTemplatePaths()));
+            normalized.add(copied);
+        }
+        return normalized;
+    }
+
+    private List<String> normalizeTemplatePaths(List<String> paths) {
+        if (paths == null || paths.isEmpty()) {
+            return new ArrayList<>();
+        }
+        LinkedHashSet<String> unique = new LinkedHashSet<>();
+        for (String path : paths) {
+            String normalized = normalizeTemplatePath(path);
+            if (!normalized.isBlank()) {
+                unique.add(normalized);
+            }
+        }
+        return new ArrayList<>(unique);
+    }
+
+    private String normalizeTemplatePath(String rawPath) {
+        if (rawPath == null) {
+            return "";
+        }
+        String value = rawPath.trim();
+        if (value.isBlank()) {
+            return "";
+        }
+        try {
+            Path resolved = resolveTemplatePath(value);
+            if (resolved.startsWith(projectRootPath)) {
+                Path relative = projectRootPath.relativize(resolved);
+                if (relative.getNameCount() == 0) {
+                    return "./";
+                }
+                return "./" + relative.toString().replace('\\', '/');
+            }
+            return resolved.toString();
+        } catch (Exception ignored) {
+            return value;
+        }
+    }
+
+    private Path resolveTemplatePath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            throw new IllegalArgumentException("模板路径不能为空");
+        }
+        Path path = Paths.get(rawPath.trim());
+        if (path.isAbsolute()) {
+            return path.toAbsolutePath().normalize();
+        }
+        return projectRootPath.resolve(path).toAbsolutePath().normalize();
     }
 
     private record LoadedTemplate(String conditionName, String path, BufferedImage image) {

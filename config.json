@@ -3,14 +3,14 @@
   "threshold" : 0.96,
   "monitorRegion" : {
     "anchor" : "TOP_LEFT",
-    "offsetX" : 500,
-    "offsetY" : 1020,
-    "width" : 165,
-    "height" : 151,
+    "offsetX" : 540,
+    "offsetY" : 1040,
+    "width" : 85,
+    "height" : 85,
     "referenceWidth" : 2560,
     "referenceHeight" : 1440,
-    "x" : 500,
-    "y" : 1020
+    "x" : 540,
+    "y" : 1040
   },
   "clickX" : 570,
   "clickY" : 1090,
@@ -19,26 +19,26 @@
   "captureMode" : "WINDOW_HANDLE",
   "startHotkey" : "F9",
   "stopHotkey" : "F10",
-  "templatePath" : "F:\\download\\高潮.png",
-  "templatePaths" : [ "F:\\download\\高潮.png" ],
+  "templatePath" : "./captures/高潮.png",
+  "templatePaths" : [ "./captures/高潮.png" ],
   "conditionExpression" : "C1",
   "conditions" : [ {
     "name" : "高潮",
     "monitorRegion" : {
       "anchor" : "TOP_LEFT",
-      "offsetX" : 500,
-      "offsetY" : 1020,
-      "width" : 165,
-      "height" : 151,
+      "offsetX" : 540,
+      "offsetY" : 1040,
+      "width" : 85,
+      "height" : 85,
       "referenceWidth" : 2560,
       "referenceHeight" : 1440,
-      "x" : 500,
-      "y" : 1020
+      "x" : 540,
+      "y" : 1040
     },
     "threshold" : 0.96,
     "clickX" : 570,
     "clickY" : 1090,
-    "templatePaths" : [ "F:\\download\\高潮.png" ],
+    "templatePaths" : [ "./captures/高潮.png" ],
     "conditionExpression" : "C1"
   }, {
     "name" : "再来一发",
@@ -56,7 +56,7 @@
     "threshold" : 0.96,
     "clickX" : 570,
     "clickY" : 1190,
-    "templatePaths" : [ "F:\\download\\再来一发.png" ],
+    "templatePaths" : [ "./captures/再来一发.png" ],
     "conditionExpression" : "C1"
   }, {
     "name" : "开始",
@@ -74,7 +74,7 @@
     "threshold" : 0.96,
     "clickX" : 570,
     "clickY" : 1190,
-    "templatePaths" : [ "F:\\download\\开始.png" ],
+    "templatePaths" : [ "./captures/开始.png" ],
     "conditionExpression" : "C1"
   } ],
   "lastWindowPid" : 30928,
