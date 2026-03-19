@@ -71,6 +71,7 @@ public class WindowClickExecutor implements ActionExecutor {
             clickByRobot(screenPoint);
             return true;
         } finally {
+            inputGuard.prepareForRestore();
             restoreForegroundWindow(previousForeground);
             restoreCursorPosition(previousCursor);
             inputGuard.release();
@@ -243,11 +244,15 @@ public class WindowClickExecutor implements ActionExecutor {
             return guard;
         }
 
-        void release() {
+        void prepareForRestore() {
             stopWatchdog();
             restoreClipCursor();
+        }
+
+        void release() {
             if (inputBlocked) {
                 tryBlockInput(false);
+                inputBlocked = false;
             }
         }
 
