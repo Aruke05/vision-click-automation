@@ -1,4 +1,5 @@
-# desktop-auto-script
+# vision-click-automation
+
 
 Windows 桌面自动化工具（Java 17 + Swing + JNA + OpenCV）。
 
