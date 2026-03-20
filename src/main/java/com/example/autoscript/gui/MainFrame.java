@@ -1457,7 +1457,7 @@ public class MainFrame extends JFrame {
                 return;
             }
             Path path = chooser.getSelectedFile().toPath();
-            AppConfig loaded = configService.load(path);
+            AppConfig loaded = configService.loadStrict(path);
             currentConfig = loaded;
             loadConfigToForm(loaded);
             try {
@@ -1465,7 +1465,7 @@ public class MainFrame extends JFrame {
             } catch (Exception e) {
                 log("方案载入后热键注册失败: " + e.getMessage());
             }
-            log("方案已载入: " + path);
+            log("方案已载入: " + path + "，条件数量=" + loaded.getConditions().size());
         } catch (Exception e) {
             showError("载入方案失败", e);
         }
