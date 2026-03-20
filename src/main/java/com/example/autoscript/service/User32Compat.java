@@ -42,6 +42,7 @@ public interface User32Compat extends StdCallLibrary {
     boolean PostThreadMessage(int idThread, int msg, WPARAM wParam, LPARAM lParam);
     boolean ClientToScreen(HWND hWnd, POINT lpPoint);
     boolean GetCursorPos(POINT lpPoint);
+    short GetAsyncKeyState(int vKey);
     boolean SetCursorPos(int x, int y);
     boolean GetClipCursor(RECT lpRect);
     boolean ClipCursor(RECT lpRect);

@@ -22,11 +22,15 @@ public class WindowClickExecutor implements ActionExecutor {
     private static final int WM_LBUTTONDOWN = 0x0201;
     private static final int WM_LBUTTONUP = 0x0202;
     private static final int MK_LBUTTON = 0x0001;
+    private static final int VK_LBUTTON = 0x01;
+    private static final int KEY_PRESSED_MASK = 0x8000;
     private static final int MOUSE_VERIFY_TOLERANCE_PX = 12;
     private static final int MOUSE_VERIFY_RETRY = 2;
     private static final int FOREGROUND_RESTORE_RETRY = 3;
     private static final int CLICK_SETTLE_DELAY_MS = 35;
     private static final int INPUT_UNLOCK_SETTLE_DELAY_MS = 45;
+    private static final int LEFT_BUTTON_RELEASE_WAIT_MS = 180;
+    private static final int LEFT_BUTTON_RELEASE_POLL_MS = 8;
 
     private final WindowService windowService;
     private final Robot robot;
@@ -74,11 +78,12 @@ public class WindowClickExecutor implements ActionExecutor {
             return true;
         } finally {
             inputGuard.prepareForRestore();
-            inputGuard.releaseInputBlock();
-            robot.delay(INPUT_UNLOCK_SETTLE_DELAY_MS);
             restoreForegroundWindow(previousForeground);
             inputGuard.restoreCursorClip();
             restoreCursorPosition(previousCursor);
+            waitForLeftButtonRelease();
+            robot.delay(INPUT_UNLOCK_SETTLE_DELAY_MS);
+            inputGuard.releaseInputBlock();
         }
     }
 
@@ -205,9 +210,38 @@ public class WindowClickExecutor implements ActionExecutor {
         if (position == null) {
             return;
         }
+        for (int i = 0; i <= MOUSE_VERIFY_RETRY; i++) {
+            try {
+                User32Compat.INSTANCE.SetCursorPos(position.x, position.y);
+            } catch (Exception ignored) {
+            }
+            Point current = queryCursorPosition();
+            if (current != null) {
+                int dx = Math.abs(current.x - position.x);
+                int dy = Math.abs(current.y - position.y);
+                if (dx <= MOUSE_VERIFY_TOLERANCE_PX && dy <= MOUSE_VERIFY_TOLERANCE_PX) {
+                    return;
+                }
+            }
+            if (i < MOUSE_VERIFY_RETRY) {
+                robot.delay(12);
+            }
+        }
+    }
+
+    private void waitForLeftButtonRelease() {
+        int waited = 0;
+        while (waited < LEFT_BUTTON_RELEASE_WAIT_MS && isLeftButtonPressed()) {
+            robot.delay(LEFT_BUTTON_RELEASE_POLL_MS);
+            waited += LEFT_BUTTON_RELEASE_POLL_MS;
+        }
+    }
+
+    private boolean isLeftButtonPressed() {
         try {
-            User32Compat.INSTANCE.SetCursorPos(position.x, position.y);
+            return (User32Compat.INSTANCE.GetAsyncKeyState(VK_LBUTTON) & KEY_PRESSED_MASK) != 0;
         } catch (Exception ignored) {
+            return false;
         }
     }
 
