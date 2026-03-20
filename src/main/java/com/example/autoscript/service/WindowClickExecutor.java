@@ -25,6 +25,8 @@ public class WindowClickExecutor implements ActionExecutor {
     private static final int MOUSE_VERIFY_TOLERANCE_PX = 12;
     private static final int MOUSE_VERIFY_RETRY = 2;
     private static final int FOREGROUND_RESTORE_RETRY = 3;
+    private static final int CLICK_SETTLE_DELAY_MS = 35;
+    private static final int INPUT_UNLOCK_SETTLE_DELAY_MS = 45;
 
     private final WindowService windowService;
     private final Robot robot;
@@ -72,9 +74,11 @@ public class WindowClickExecutor implements ActionExecutor {
             return true;
         } finally {
             inputGuard.prepareForRestore();
+            inputGuard.releaseInputBlock();
+            robot.delay(INPUT_UNLOCK_SETTLE_DELAY_MS);
             restoreForegroundWindow(previousForeground);
+            inputGuard.restoreCursorClip();
             restoreCursorPosition(previousCursor);
-            inputGuard.release();
         }
     }
 
@@ -183,6 +187,7 @@ public class WindowClickExecutor implements ActionExecutor {
         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
         robot.delay(50);
         robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+        robot.delay(CLICK_SETTLE_DELAY_MS);
     }
 
     private Point queryCursorPosition() {
@@ -246,14 +251,22 @@ public class WindowClickExecutor implements ActionExecutor {
 
         void prepareForRestore() {
             stopWatchdog();
-            restoreClipCursor();
         }
 
-        void release() {
+        void releaseInputBlock() {
             if (inputBlocked) {
                 tryBlockInput(false);
                 inputBlocked = false;
             }
+        }
+
+        void restoreCursorClip() {
+            restoreClipCursor();
+        }
+
+        void release() {
+            releaseInputBlock();
+            restoreCursorClip();
         }
 
         private void lock() {
