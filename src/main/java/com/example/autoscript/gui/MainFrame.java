@@ -41,9 +41,12 @@ import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.event.ChangeListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
+import java.awt.CardLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
@@ -51,6 +54,8 @@ import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.event.FocusAdapter;
+import java.awt.event.FocusEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.file.Files;
@@ -67,6 +72,8 @@ import java.util.concurrent.TimeUnit;
 public class MainFrame extends JFrame {
 
     private static final CaptureMode DEFAULT_CAPTURE_MODE = CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN;
+    private static final String CONDITION_EDITOR_CARD_PLACEHOLDER = "placeholder";
+    private static final String CONDITION_EDITOR_CARD_EDITOR = "editor";
 
     private final WindowService windowService;
     private final ConfigService configService;
@@ -81,6 +88,8 @@ public class MainFrame extends JFrame {
     private final JTable windowTable = new JTable(windowTableModel);
     private final ConditionTableModel conditionTableModel = new ConditionTableModel();
     private final JTable conditionTable = new JTable(conditionTableModel);
+    private final JPanel conditionEditorCardPanel = new JPanel(new CardLayout());
+    private final JLabel editingConditionLabel = new JLabel("未进入编辑模式，请先选中条件后点击“编辑选中条件”");
     private final JTextArea logArea = new JTextArea();
     private final JLabel bindStatusLabel = new JLabel("当前未绑定窗口");
     private final JButton toggleLogPanelButton = new JButton("隐藏日志");
@@ -106,6 +115,8 @@ public class MainFrame extends JFrame {
     private final JButton togglePreviewOverlayButton = new JButton("显示区域与点击预览");
     private final ClickOverlayWindow clickOverlay;
     private final javax.swing.Timer clickOverlayTimer;
+    private final SelectionMaskOverlayWindow selectionMaskOverlay;
+    private final javax.swing.Timer basicConfigAutoSaveTimer;
 
     private WindowInfo boundWindow;
     private CaptureMode boundCaptureMode = DEFAULT_CAPTURE_MODE;
@@ -116,9 +127,11 @@ public class MainFrame extends JFrame {
     private boolean clickOverlayErrorLogged = false;
     private boolean clickOverlayPositionLogged = false;
     private boolean syncingConditionEditor = false;
+    private int editingConditionRow = -1;
     private JSplitPane configVerticalSplitPane;
     private boolean logPanelCollapsed = false;
     private int lastLogDividerLocation = -1;
+    private boolean suppressBasicConfigAutoSave = false;
     private final Path projectRootPath = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     private final Path scriptDirPath = projectRootPath.resolve("script").toAbsolutePath().normalize();
     private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
@@ -139,10 +152,15 @@ public class MainFrame extends JFrame {
         this.regionOverlayTimer = new javax.swing.Timer(220, e -> refreshRegionOverlayQuietly());
         this.clickOverlay = new ClickOverlayWindow(this);
         this.clickOverlayTimer = new javax.swing.Timer(220, e -> refreshClickOverlayQuietly());
+        this.selectionMaskOverlay = new SelectionMaskOverlayWindow(this);
+        this.basicConfigAutoSaveTimer = new javax.swing.Timer(180, e -> autoSaveBasicConfigNow());
+        this.basicConfigAutoSaveTimer.setRepeats(false);
 
         initLookAndFeel();
         initComponents();
         installRegionPreviewListeners();
+        installBasicConfigAutoSaveListeners();
+        installConditionEditorAutoApplyListeners();
         loadConfigToForm(currentConfig);
         try {
             registerGlobalHotkeys(currentConfig, true);
@@ -197,6 +215,54 @@ public class MainFrame extends JFrame {
         ChangeListener clickListener = e -> refreshClickOverlayQuietly();
         clickXSpinner.addChangeListener(clickListener);
         clickYSpinner.addChangeListener(clickListener);
+    }
+
+    private void installBasicConfigAutoSaveListeners() {
+        intervalSpinner.addChangeListener(e -> scheduleBasicConfigAutoSave());
+        repeatTriggerCheckBox.addActionListener(e -> scheduleBasicConfigAutoSave());
+        backgroundClickModeCheckBox.addActionListener(e -> scheduleBasicConfigAutoSave());
+
+        startHotkeyField.addActionListener(e -> scheduleBasicConfigAutoSave());
+        stopHotkeyField.addActionListener(e -> scheduleBasicConfigAutoSave());
+        FocusAdapter hotkeyFocusListener = new FocusAdapter() {
+            @Override
+            public void focusLost(FocusEvent e) {
+                scheduleBasicConfigAutoSave();
+            }
+        };
+        startHotkeyField.addFocusListener(hotkeyFocusListener);
+        stopHotkeyField.addFocusListener(hotkeyFocusListener);
+    }
+
+    private void installConditionEditorAutoApplyListeners() {
+        ChangeListener spinnerListener = e -> autoApplyEditorToEditingCondition();
+        regionOffsetXSpinner.addChangeListener(spinnerListener);
+        regionOffsetYSpinner.addChangeListener(spinnerListener);
+        regionWidthSpinner.addChangeListener(spinnerListener);
+        regionHeightSpinner.addChangeListener(spinnerListener);
+        thresholdSpinner.addChangeListener(spinnerListener);
+        clickXSpinner.addChangeListener(spinnerListener);
+        clickYSpinner.addChangeListener(spinnerListener);
+
+        DocumentListener textListener = new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                autoApplyEditorToEditingCondition();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                autoApplyEditorToEditingCondition();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                autoApplyEditorToEditingCondition();
+            }
+        };
+        conditionNameField.getDocument().addDocumentListener(textListener);
+        templatePathsArea.getDocument().addDocumentListener(textListener);
+        conditionExpressionField.getDocument().addDocumentListener(textListener);
     }
 
     private JPanel buildWindowPanel() {
@@ -283,25 +349,25 @@ public class MainFrame extends JFrame {
         JPanel manageButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton addButton = new JButton("新增条件");
         JButton duplicateButton = new JButton("复制条件");
-        JButton applyButton = new JButton("更新当前条件");
+        JButton editButton = new JButton("编辑选中条件");
         JButton removeButton = new JButton("删除条件");
         JButton moveUpButton = new JButton("上移");
         JButton moveDownButton = new JButton("下移");
         addButton.addActionListener(e -> addConditionFromEditor());
         duplicateButton.addActionListener(e -> duplicateSelectedCondition());
-        applyButton.addActionListener(e -> applyEditorToSelectedCondition());
+        editButton.addActionListener(e -> beginEditSelectedCondition());
         removeButton.addActionListener(e -> removeSelectedCondition());
         moveUpButton.addActionListener(e -> moveSelectedCondition(-1));
         moveDownButton.addActionListener(e -> moveSelectedCondition(1));
         manageButtons.add(addButton);
         manageButtons.add(duplicateButton);
-        manageButtons.add(applyButton);
+        manageButtons.add(editButton);
         manageButtons.add(removeButton);
         manageButtons.add(moveUpButton);
         manageButtons.add(moveDownButton);
         tablePanel.add(manageButtons, BorderLayout.SOUTH);
 
-        JPanel editorPanel = buildConditionEditorPanel();
+        JPanel editorPanel = buildConditionEditorContainer();
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tablePanel, editorPanel);
         splitPane.setResizeWeight(0.43D);
@@ -311,6 +377,27 @@ public class MainFrame extends JFrame {
         JPanel root = new JPanel(new BorderLayout(0, 0));
         root.add(splitPane, BorderLayout.CENTER);
         return root;
+    }
+
+    private JPanel buildConditionEditorContainer() {
+        JPanel editorPanel = buildConditionEditorPanel();
+        JPanel placeholderPanel = buildConditionEditorPlaceholderPanel();
+        conditionEditorCardPanel.add(placeholderPanel, CONDITION_EDITOR_CARD_PLACEHOLDER);
+        conditionEditorCardPanel.add(editorPanel, CONDITION_EDITOR_CARD_EDITOR);
+
+        JPanel container = new JPanel(new BorderLayout(0, 6));
+        container.add(editingConditionLabel, BorderLayout.NORTH);
+        container.add(conditionEditorCardPanel, BorderLayout.CENTER);
+        showConditionEditorPlaceholder("未进入编辑模式，请先选中条件后点击“编辑选中条件”");
+        return container;
+    }
+
+    private JPanel buildConditionEditorPlaceholderPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createTitledBorder("条件编辑"));
+        JLabel hint = new JLabel("请先在上方选中一条条件，然后点击“编辑选中条件”。", JLabel.CENTER);
+        panel.add(hint, BorderLayout.CENTER);
+        return panel;
     }
 
     private JPanel buildConditionEditorPanel() {
@@ -323,9 +410,19 @@ public class MainFrame extends JFrame {
         addFormRow(form, gbc, row++, "区域 Y(client)", regionOffsetYSpinner);
         addFormRow(form, gbc, row++, "区域宽度", regionWidthSpinner);
         addFormRow(form, gbc, row++, "区域高度", regionHeightSpinner);
+        JPanel regionPickerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        JButton selectRegionByMaskButton = new JButton("蒙版框选区域");
+        selectRegionByMaskButton.addActionListener(e -> selectRegionByMask());
+        regionPickerPanel.add(selectRegionByMaskButton);
+        addFormRow(form, gbc, row++, "区域框选", regionPickerPanel);
         addFormRow(form, gbc, row++, "相似度阈值(%)", thresholdSpinner);
         addFormRow(form, gbc, row++, "点击坐标 X(client)", clickXSpinner);
         addFormRow(form, gbc, row++, "点击坐标 Y(client)", clickYSpinner);
+        JPanel clickPickerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        JButton selectClickByMaskButton = new JButton("蒙版框选点击中心");
+        selectClickByMaskButton.addActionListener(e -> selectClickPointByMask());
+        clickPickerPanel.add(selectClickByMaskButton);
+        addFormRow(form, gbc, row++, "点击框选", clickPickerPanel);
 
         JPanel templatePanel = new JPanel(new BorderLayout(6, 6));
         templatePathsArea.setLineWrap(false);
@@ -333,12 +430,15 @@ public class MainFrame extends JFrame {
         templatePanel.add(new JScrollPane(templatePathsArea), BorderLayout.CENTER);
         JPanel templateButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         JButton chooseTemplateButton = new JButton("导入模板(可多选)");
+        JButton captureTemplateButton = new JButton("判断区截图设为模板");
         JButton clearTemplateButton = new JButton("清空");
         JButton autoExprButton = new JButton("自动AND表达式");
         chooseTemplateButton.addActionListener(e -> chooseTemplates());
+        captureTemplateButton.addActionListener(e -> captureRegionAsConditionTemplate());
         clearTemplateButton.addActionListener(e -> clearTemplates());
         autoExprButton.addActionListener(e -> autoGenerateExpression());
         templateButtons.add(chooseTemplateButton);
+        templateButtons.add(captureTemplateButton);
         templateButtons.add(clearTemplateButton);
         templateButtons.add(autoExprButton);
         templatePanel.add(templateButtons, BorderLayout.NORTH);
@@ -351,14 +451,12 @@ public class MainFrame extends JFrame {
 
     private JPanel buildActionBar() {
         JPanel actionBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
-        JButton saveConfigButton = new JButton("保存配置");
         JButton saveProfileButton = new JButton("导出方案");
         JButton loadProfileButton = new JButton("载入方案");
         JButton startButton = new JButton("启动监控");
         JButton stopButton = new JButton("停止监控");
         JButton captureRegionButton = new JButton("截图判断区");
 
-        saveConfigButton.addActionListener(e -> saveConfig());
         saveProfileButton.addActionListener(e -> exportProfile());
         loadProfileButton.addActionListener(e -> importProfile());
         startButton.addActionListener(e -> startMonitoring());
@@ -367,7 +465,6 @@ public class MainFrame extends JFrame {
         togglePreviewOverlayButton.addActionListener(e -> togglePreviewOverlay());
         toggleLogPanelButton.addActionListener(e -> toggleLogPanel());
 
-        actionBar.add(saveConfigButton);
         actionBar.add(saveProfileButton);
         actionBar.add(loadProfileButton);
         actionBar.add(startButton);
@@ -537,6 +634,208 @@ public class MainFrame extends JFrame {
         log("已导入模板条件数量=" + paths.size());
     }
 
+    private void captureRegionAsConditionTemplate() {
+        if (!ensureBoundWindowReady("截图设模板")) {
+            return;
+        }
+        OverlayState overlayState = suspendOverlaysForCapture();
+        try {
+            CapturedRegion captured = captureSelectedConditionRegionToFile("template");
+            String normalizedPath = normalizeTemplatePath(captured.outputPath().toString());
+            templatePathsArea.setText(normalizedPath);
+            conditionExpressionField.setText("C1");
+            applyEditorToSelectedConditionQuietly();
+            log("已将判断区域截图设为条件模板: " + normalizedPath);
+            logCaptureQualityHints(captured.image(), captured.captureMode());
+            JOptionPane.showMessageDialog(this,
+                    "已截图并设置为当前条件模板:\n" + captured.outputPath(),
+                    "完成",
+                    JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception e) {
+            showError("判断区域截图设模板失败", e);
+        } finally {
+            restoreOverlaysAfterCapture(overlayState);
+        }
+    }
+
+    private void selectRegionByMask() {
+        if (!ensureBoundWindowReady("蒙版框选区域")) {
+            return;
+        }
+
+        final Rectangle clientRect;
+        try {
+            clientRect = requireBoundClientRect("蒙版框选区域");
+        } catch (Exception e) {
+            showError("蒙版框选区域失败", new IllegalStateException(e.getMessage(), e));
+            return;
+        }
+
+        final OverlayState overlayState = suspendOverlaysForCapture();
+        try {
+            BufferedImage snapshot = tryCaptureClientSnapshotForMask(clientRect);
+            selectionMaskOverlay.start(
+                    clientRect,
+                    snapshot,
+                    "拖动鼠标框选判断区域，松开确认；ESC 或右键取消",
+                    new SelectionMaskOverlayWindow.SelectionCallback() {
+                        @Override
+                        public void onSelected(Rectangle selectionRect) {
+                            try {
+                                pinSelectedConditionReferenceSize(clientRect.width, clientRect.height);
+                                regionOffsetXSpinner.setValue(selectionRect.x);
+                                regionOffsetYSpinner.setValue(selectionRect.y);
+                                regionWidthSpinner.setValue(Math.max(1, selectionRect.width));
+                                regionHeightSpinner.setValue(Math.max(1, selectionRect.height));
+                                applyEditorToSelectedConditionQuietly();
+                                log(String.format("已通过蒙版框选设置判断区域: x=%d, y=%d, w=%d, h=%d",
+                                        selectionRect.x, selectionRect.y, selectionRect.width, selectionRect.height));
+                            } finally {
+                                restoreOverlaysAfterCapture(overlayState);
+                            }
+                        }
+
+                        @Override
+                        public void onCanceled() {
+                            restoreOverlaysAfterCapture(overlayState);
+                        }
+                    }
+            );
+        } catch (Exception e) {
+            restoreOverlaysAfterCapture(overlayState);
+            showError("蒙版框选区域失败", new IllegalStateException(e.getMessage(), e));
+        }
+    }
+
+    private void selectClickPointByMask() {
+        if (!ensureBoundWindowReady("蒙版框选点击")) {
+            return;
+        }
+
+        final Rectangle clientRect;
+        try {
+            clientRect = requireBoundClientRect("蒙版框选点击");
+        } catch (Exception e) {
+            showError("蒙版框选点击失败", new IllegalStateException(e.getMessage(), e));
+            return;
+        }
+
+        final OverlayState overlayState = suspendOverlaysForCapture();
+        try {
+            BufferedImage snapshot = tryCaptureClientSnapshotForMask(clientRect);
+            selectionMaskOverlay.start(
+                    clientRect,
+                    snapshot,
+                    "拖动鼠标框选点击区域，松开后取中心点；ESC 或右键取消",
+                    new SelectionMaskOverlayWindow.SelectionCallback() {
+                        @Override
+                        public void onSelected(Rectangle selectionRect) {
+                            try {
+                                pinSelectedConditionReferenceSize(clientRect.width, clientRect.height);
+                                int clickX = selectionRect.x + selectionRect.width / 2;
+                                int clickY = selectionRect.y + selectionRect.height / 2;
+                                clickXSpinner.setValue(clickX);
+                                clickYSpinner.setValue(clickY);
+                                applyEditorToSelectedConditionQuietly();
+                                log(String.format("已通过蒙版框选设置点击坐标: x=%d, y=%d", clickX, clickY));
+                            } finally {
+                                restoreOverlaysAfterCapture(overlayState);
+                            }
+                        }
+
+                        @Override
+                        public void onCanceled() {
+                            restoreOverlaysAfterCapture(overlayState);
+                        }
+                    }
+            );
+        } catch (Exception e) {
+            restoreOverlaysAfterCapture(overlayState);
+            showError("蒙版框选点击失败", new IllegalStateException(e.getMessage(), e));
+        }
+    }
+
+    private BufferedImage tryCaptureClientSnapshotForMask(Rectangle clientRect) {
+        if (clientRect == null || clientRect.width <= 0 || clientRect.height <= 0) {
+            return null;
+        }
+        try {
+            MonitorRegion fullRegion = new MonitorRegion();
+            fullRegion.setX(0);
+            fullRegion.setY(0);
+            fullRegion.setWidth(clientRect.width);
+            fullRegion.setHeight(clientRect.height);
+            fullRegion.setReferenceWidth(clientRect.width);
+            fullRegion.setReferenceHeight(clientRect.height);
+            return captureService.capture(boundWindow, fullRegion, CaptureMode.SCREEN);
+        } catch (Exception e) {
+            log("蒙版背景截图失败，已回退纯色蒙版: " + e.getMessage());
+            BufferedImage fallback = new BufferedImage(
+                    Math.max(1, clientRect.width),
+                    Math.max(1, clientRect.height),
+                    BufferedImage.TYPE_INT_RGB
+            );
+            java.awt.Graphics2D g2 = fallback.createGraphics();
+            try {
+                g2.setColor(new java.awt.Color(46, 46, 46));
+                g2.fillRect(0, 0, fallback.getWidth(), fallback.getHeight());
+            } finally {
+                g2.dispose();
+            }
+            return fallback;
+        }
+    }
+
+    private void pinSelectedConditionReferenceSize(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        int selectedRow = conditionTable.getSelectedRow();
+        if (selectedRow < 0) {
+            return;
+        }
+        ConditionConfig selected = conditionTableModel.getConditionAt(selectedRow);
+        if (selected == null) {
+            return;
+        }
+        MonitorRegion region = selected.getMonitorRegion();
+        if (region == null) {
+            region = new MonitorRegion();
+        }
+        region.setReferenceWidth(width);
+        region.setReferenceHeight(height);
+        selected.setMonitorRegion(region);
+        conditionTableModel.updateCondition(selectedRow, selected);
+    }
+
+    private boolean ensureBoundWindowReady(String actionName) {
+        if (boundWindow == null) {
+            JOptionPane.showMessageDialog(this, "请先绑定一个窗口。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        try {
+            requireBoundClientRect(actionName);
+            return true;
+        } catch (Exception e) {
+            showError(actionName + "失败", new IllegalStateException(e.getMessage(), e));
+            return false;
+        }
+    }
+
+    private Rectangle requireBoundClientRect(String actionName) {
+        if (boundWindow == null || !windowService.isAlive(boundWindow)) {
+            throw new IllegalStateException("目标窗口已失效，请重新绑定后再" + actionName + "。");
+        }
+        if (windowService.isMinimized(boundWindow)) {
+            throw new IllegalStateException("目标窗口已最小化，请先恢复窗口后再" + actionName + "。");
+        }
+        Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
+        if (clientRect.width <= 0 || clientRect.height <= 0) {
+            throw new IllegalStateException("目标窗口 client 区域无效: " + clientRect);
+        }
+        return clientRect;
+    }
+
     private void clearTemplates() {
         templatePathsArea.setText("");
         conditionExpressionField.setText("");
@@ -567,23 +866,89 @@ public class MainFrame extends JFrame {
         }
         int selectedRow = conditionTable.getSelectedRow();
         if (selectedRow < 0) {
+            showConditionEditorPlaceholder("未选中条件，请先选中后点击“编辑选中条件”");
             return;
         }
         ConditionConfig condition = conditionTableModel.getConditionAt(selectedRow);
         if (condition == null) {
+            showConditionEditorPlaceholder("所选条件不存在，请重新选择");
             return;
         }
+        if (editingConditionRow == selectedRow) {
+            updateEditingConditionLabel(selectedRow, condition);
+            return;
+        }
+        String name = resolveConditionName(condition, selectedRow);
+        showConditionEditorPlaceholder("已选中: " + name + "，点击“编辑选中条件”开始编辑");
+    }
+
+    private void beginEditSelectedCondition() {
+        int selectedRow = conditionTable.getSelectedRow();
+        if (selectedRow < 0) {
+            JOptionPane.showMessageDialog(this, "请先选择一个条件。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        ConditionConfig condition = conditionTableModel.getConditionAt(selectedRow);
+        if (condition == null) {
+            JOptionPane.showMessageDialog(this, "未找到选中的条件。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        editingConditionRow = selectedRow;
         loadConditionToEditor(condition);
+        showConditionEditor();
+        updateEditingConditionLabel(selectedRow, condition);
+        log("进入条件编辑: " + resolveConditionName(condition, selectedRow));
+    }
+
+    private void autoApplyEditorToEditingCondition() {
+        if (syncingConditionEditor || editingConditionRow < 0) {
+            return;
+        }
+        if (editingConditionRow >= conditionTableModel.getConditionCount()) {
+            showConditionEditorPlaceholder("编辑目标已失效，请重新选择条件并点击“编辑选中条件”");
+            return;
+        }
+        try {
+            ConditionConfig condition = readConditionFromEditor();
+            if (condition.getName().isBlank()) {
+                condition.setName("条件" + (editingConditionRow + 1));
+            }
+            conditionTableModel.updateCondition(editingConditionRow, condition);
+            if (conditionTable.getSelectedRow() != editingConditionRow) {
+                conditionTable.getSelectionModel().setSelectionInterval(editingConditionRow, editingConditionRow);
+            }
+            updateEditingConditionLabel(editingConditionRow, condition);
+        } catch (Exception e) {
+            log("条件编辑自动应用失败: " + e.getMessage());
+        }
+    }
+
+    private void showConditionEditorPlaceholder(String statusText) {
+        editingConditionRow = -1;
+        CardLayout layout = (CardLayout) conditionEditorCardPanel.getLayout();
+        layout.show(conditionEditorCardPanel, CONDITION_EDITOR_CARD_PLACEHOLDER);
+        editingConditionLabel.setText(statusText);
+    }
+
+    private void showConditionEditor() {
+        CardLayout layout = (CardLayout) conditionEditorCardPanel.getLayout();
+        layout.show(conditionEditorCardPanel, CONDITION_EDITOR_CARD_EDITOR);
+    }
+
+    private void updateEditingConditionLabel(int row, ConditionConfig condition) {
+        String name = resolveConditionName(condition, row);
+        editingConditionLabel.setText("正在编辑: #" + (row + 1) + "  " + name + "（修改自动生效）");
     }
 
     private void addConditionFromEditor() {
         applyEditorToSelectedConditionQuietly();
-        ConditionConfig condition = readConditionFromEditor();
+        ConditionConfig condition = editingConditionRow >= 0 ? readConditionFromEditor() : new ConditionConfig();
         if (condition.getName().isBlank()) {
             condition.setName("条件" + (conditionTableModel.getConditionCount() + 1));
         }
         int index = conditionTableModel.addCondition(condition);
         conditionTable.getSelectionModel().setSelectionInterval(index, index);
+        showConditionEditorPlaceholder("已新增条件，请点击“编辑选中条件”继续编辑");
         log("已新增条件: " + condition.getName());
     }
 
@@ -605,26 +970,13 @@ public class MainFrame extends JFrame {
         }
         int index = conditionTableModel.addCondition(condition);
         conditionTable.getSelectionModel().setSelectionInterval(index, index);
+        showConditionEditorPlaceholder("已复制条件，请点击“编辑选中条件”继续编辑");
         log("已复制条件: " + condition.getName());
     }
 
-    private void applyEditorToSelectedCondition() {
-        int selectedRow = conditionTable.getSelectedRow();
-        if (selectedRow < 0) {
-            JOptionPane.showMessageDialog(this, "请先选择一个条件再更新。", "提示", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-        ConditionConfig condition = readConditionFromEditor();
-        if (condition.getName().isBlank()) {
-            condition.setName("条件" + (selectedRow + 1));
-        }
-        conditionTableModel.updateCondition(selectedRow, condition);
-        log("已更新条件: " + condition.getName());
-    }
-
     private void applyEditorToSelectedConditionQuietly() {
-        int selectedRow = conditionTable.getSelectedRow();
-        if (selectedRow < 0) {
+        int selectedRow = editingConditionRow;
+        if (selectedRow < 0 || syncingConditionEditor) {
             return;
         }
         ConditionConfig condition = readConditionFromEditor();
@@ -632,6 +984,9 @@ public class MainFrame extends JFrame {
             condition.setName("条件" + (selectedRow + 1));
         }
         conditionTableModel.updateCondition(selectedRow, condition);
+        if (editingConditionRow >= 0) {
+            updateEditingConditionLabel(selectedRow, condition);
+        }
     }
 
     private void removeSelectedCondition() {
@@ -646,9 +1001,9 @@ public class MainFrame extends JFrame {
         if (count > 0) {
             int next = Math.min(selectedRow, count - 1);
             conditionTable.getSelectionModel().setSelectionInterval(next, next);
+            showConditionEditorPlaceholder("条件已删除，请点击“编辑选中条件”继续编辑");
         } else {
-            loadConditionToEditor(new ConditionConfig());
-            conditionNameField.setText("条件1");
+            showConditionEditorPlaceholder("暂无条件，请先新增条件");
         }
         log("已删除条件: " + (condition == null ? "" : condition.getName()));
     }
@@ -661,6 +1016,7 @@ public class MainFrame extends JFrame {
         }
         int target = conditionTableModel.moveCondition(selectedRow, offset);
         conditionTable.getSelectionModel().setSelectionInterval(target, target);
+        showConditionEditorPlaceholder("条件顺序已调整，请点击“编辑选中条件”继续编辑");
     }
 
     private void loadConditionToEditor(ConditionConfig condition) {
@@ -1097,9 +1453,7 @@ public class MainFrame extends JFrame {
                 conditionTable.getSelectionModel().setSelectionInterval(selected, selected);
             }
 
-            currentConfig.setLastWindowPid(boundWindow.getProcessId());
-            currentConfig.setLastWindowTitle(boundWindow.getTitle());
-            currentConfig.setLastWindowClassName(boundWindow.getClassName());
+            applyBoundWindowMetadata(currentConfig);
             configService.save(currentConfig);
 
             monitoringService.start(boundWindow, currentConfig, pollingConditions);
@@ -1173,45 +1527,53 @@ public class MainFrame extends JFrame {
     }
 
     private void captureCurrentRegion() {
-        if (boundWindow == null) {
-            JOptionPane.showMessageDialog(this, "请先绑定一个窗口。", "提示", JOptionPane.INFORMATION_MESSAGE);
+        if (!ensureBoundWindowReady("截图判断区")) {
             return;
         }
         OverlayState overlayState = suspendOverlaysForCapture();
         try {
-            AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
-            Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
-            normalizeRegionCoordinateModeIfNeeded(config, clientRect, true);
-            ensureReferenceSizeIfMissing(config, clientRect, false);
-
-            try {
-                Thread.sleep(80L);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-
-            BufferedImage image = captureService.capture(boundWindow, config.getMonitorRegion(), config.getCaptureMode());
-
-            Path captureDir = capturesDirPath;
-            Files.createDirectories(captureDir);
-            String filename = "region-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")) + ".png";
-            Path output = captureDir.resolve(filename);
-
-            ImageIO.write(image, "png", output.toFile());
-            log("已截图判断区: " + output + "，size=" + image.getWidth() + "x" + image.getHeight());
-            if (isMostlyWhite(image)) {
-                log("警告: 截图几乎全白，目标窗口可能为独占全屏/受保护渲染。建议切换为窗口化或无边框窗口化后再试。");
-            }
-            if ((config.getCaptureMode() == CaptureMode.WINDOW_HANDLE
-                    || config.getCaptureMode() == CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN)
-                    && isMostlyBlack(image)) {
-                log("警告: 句柄截图几乎全黑，目标窗口可能不支持 PrintWindow（如硬件加速/受保护渲染）。建议以管理员启动并重新绑定窗口触发截图模式探测。");
-            }
-            JOptionPane.showMessageDialog(this, "截图已保存:\n" + output, "完成", JOptionPane.INFORMATION_MESSAGE);
+            CapturedRegion captured = captureSelectedConditionRegionToFile("region");
+            log("已截图判断区: " + captured.outputPath()
+                    + "，size=" + captured.image().getWidth() + "x" + captured.image().getHeight());
+            logCaptureQualityHints(captured.image(), captured.captureMode());
+            JOptionPane.showMessageDialog(this, "截图已保存:\n" + captured.outputPath(), "完成", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception e) {
             showError("截图判断区失败", e);
         } finally {
             restoreOverlaysAfterCapture(overlayState);
+        }
+    }
+
+    private CapturedRegion captureSelectedConditionRegionToFile(String filenamePrefix) throws Exception {
+        AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
+        Rectangle clientRect = requireBoundClientRect("截图判断区");
+        normalizeRegionCoordinateModeIfNeeded(config, clientRect, true);
+        ensureReferenceSizeIfMissing(config, clientRect, false);
+
+        try {
+            Thread.sleep(80L);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+
+        BufferedImage image = captureService.capture(boundWindow, config.getMonitorRegion(), config.getCaptureMode());
+        Path captureDir = capturesDirPath;
+        Files.createDirectories(captureDir);
+        String filePrefix = (filenamePrefix == null || filenamePrefix.isBlank()) ? "region" : filenamePrefix.trim();
+        String filename = filePrefix + "-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")) + ".png";
+        Path output = captureDir.resolve(filename);
+        ImageIO.write(image, "png", output.toFile());
+        return new CapturedRegion(output, image, config.getCaptureMode());
+    }
+
+    private void logCaptureQualityHints(BufferedImage image, CaptureMode captureMode) {
+        if (isMostlyWhite(image)) {
+            log("警告: 截图几乎全白，目标窗口可能为独占全屏/受保护渲染。建议切换为窗口化或无边框窗口化后再试。");
+        }
+        if ((captureMode == CaptureMode.WINDOW_HANDLE
+                || captureMode == CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN)
+                && isMostlyBlack(image)) {
+            log("警告: 句柄截图几乎全黑，目标窗口可能不支持 PrintWindow（如硬件加速/受保护渲染）。建议以管理员启动并重新绑定窗口触发截图模式探测。");
         }
     }
 
@@ -1311,6 +1673,29 @@ public class MainFrame extends JFrame {
         return (double) black / (double) total >= 0.98D;
     }
 
+    private void scheduleBasicConfigAutoSave() {
+        if (suppressBasicConfigAutoSave) {
+            return;
+        }
+        basicConfigAutoSaveTimer.restart();
+    }
+
+    private void autoSaveBasicConfigNow() {
+        if (suppressBasicConfigAutoSave) {
+            return;
+        }
+        try {
+            applyEditorToSelectedConditionQuietly();
+            AppConfig updated = readConfigFromForm();
+            applyBoundWindowMetadata(updated);
+            registerGlobalHotkeys(updated, false);
+            currentConfig = updated;
+            configService.save(currentConfig);
+        } catch (Exception e) {
+            log("基础设置自动保存失败: " + e.getMessage());
+        }
+    }
+
     private void saveConfig() {
         saveConfig(true);
     }
@@ -1340,10 +1725,8 @@ public class MainFrame extends JFrame {
                     int selected = Math.min(Math.max(conditionTable.getSelectedRow(), 0), conditionTableModel.getConditionCount() - 1);
                     conditionTable.getSelectionModel().setSelectionInterval(selected, selected);
                 }
-                currentConfig.setLastWindowPid(boundWindow.getProcessId());
-                currentConfig.setLastWindowTitle(boundWindow.getTitle());
-                currentConfig.setLastWindowClassName(boundWindow.getClassName());
             }
+            applyBoundWindowMetadata(currentConfig);
             configService.save(currentConfig);
             log("配置已保存到: " + configService.getConfigPath());
         } catch (Exception e) {
@@ -1352,6 +1735,23 @@ public class MainFrame extends JFrame {
             } else {
                 log("保存配置失败: " + e.getMessage());
             }
+        }
+    }
+
+    private void applyBoundWindowMetadata(AppConfig config) {
+        if (config == null) {
+            return;
+        }
+        if (boundWindow != null) {
+            config.setLastWindowPid(boundWindow.getProcessId());
+            config.setLastWindowTitle(boundWindow.getTitle());
+            config.setLastWindowClassName(boundWindow.getClassName());
+            return;
+        }
+        if (currentConfig != null) {
+            config.setLastWindowPid(currentConfig.getLastWindowPid());
+            config.setLastWindowTitle(currentConfig.getLastWindowTitle());
+            config.setLastWindowClassName(currentConfig.getLastWindowClassName());
         }
     }
 
@@ -1423,38 +1823,42 @@ public class MainFrame extends JFrame {
         if (config == null) {
             return;
         }
-        intervalSpinner.setValue(config.getIntervalMs());
-        repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
-        backgroundClickModeCheckBox.setSelected(config.isBackgroundClickMode());
-        String normalizedStart = "F9";
-        String normalizedStop = "F10";
+        boolean previousSuppress = suppressBasicConfigAutoSave;
+        suppressBasicConfigAutoSave = true;
         try {
-            normalizedStart = GlobalHotkeyService.normalizeHotkeyText(config.getStartHotkey(), "F9");
-        } catch (Exception e) {
-            log("启动热键配置无效，已回退为 F9: " + e.getMessage());
-        }
-        try {
-            normalizedStop = GlobalHotkeyService.normalizeHotkeyText(config.getStopHotkey(), "F10");
-        } catch (Exception e) {
-            log("停止热键配置无效，已回退为 F10: " + e.getMessage());
-        }
-        startHotkeyField.setText(normalizedStart);
-        stopHotkeyField.setText(normalizedStop);
+            intervalSpinner.setValue(config.getIntervalMs());
+            repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
+            backgroundClickModeCheckBox.setSelected(config.isBackgroundClickMode());
+            String normalizedStart = "F9";
+            String normalizedStop = "F10";
+            try {
+                normalizedStart = GlobalHotkeyService.normalizeHotkeyText(config.getStartHotkey(), "F9");
+            } catch (Exception e) {
+                log("启动热键配置无效，已回退为 F9: " + e.getMessage());
+            }
+            try {
+                normalizedStop = GlobalHotkeyService.normalizeHotkeyText(config.getStopHotkey(), "F10");
+            } catch (Exception e) {
+                log("停止热键配置无效，已回退为 F10: " + e.getMessage());
+            }
+            startHotkeyField.setText(normalizedStart);
+            stopHotkeyField.setText(normalizedStop);
 
-        List<ConditionConfig> conditions = normalizeConditionTemplatePaths(config.getConditions());
-        if (conditions.isEmpty()) {
-            ConditionConfig defaultCondition = new ConditionConfig();
-            defaultCondition.setName("条件1");
-            conditions.add(defaultCondition);
-        }
-        conditionTableModel.setConditions(conditions);
-        if (conditionTableModel.getConditionCount() > 0) {
-            conditionTable.getSelectionModel().setSelectionInterval(0, 0);
-            ConditionConfig condition = conditionTableModel.getConditionAt(0);
-            loadConditionToEditor(condition);
-        } else {
-            loadConditionToEditor(new ConditionConfig());
-            conditionNameField.setText("条件1");
+            List<ConditionConfig> conditions = normalizeConditionTemplatePaths(config.getConditions());
+            if (conditions.isEmpty()) {
+                ConditionConfig defaultCondition = new ConditionConfig();
+                defaultCondition.setName("条件1");
+                conditions.add(defaultCondition);
+            }
+            conditionTableModel.setConditions(conditions);
+            if (conditionTableModel.getConditionCount() > 0) {
+                conditionTable.getSelectionModel().setSelectionInterval(0, 0);
+                showConditionEditorPlaceholder("配置已加载，请点击“编辑选中条件”开始编辑");
+            } else {
+                showConditionEditorPlaceholder("暂无条件，请先新增条件");
+            }
+        } finally {
+            suppressBasicConfigAutoSave = previousSuppress;
         }
     }
 
@@ -1625,6 +2029,7 @@ public class MainFrame extends JFrame {
 
     private void shutdown() {
         try {
+            basicConfigAutoSaveTimer.stop();
             regionOverlayTimer.stop();
             regionOverlay.hideOverlay();
             clickOverlayTimer.stop();
@@ -1639,6 +2044,7 @@ public class MainFrame extends JFrame {
             hotkeyService.close();
             regionOverlay.dispose();
             clickOverlay.dispose();
+            selectionMaskOverlay.dispose();
         }
     }
 
@@ -1727,6 +2133,9 @@ public class MainFrame extends JFrame {
     }
 
     private record LoadedTemplate(String conditionName, String path, BufferedImage image) {
+    }
+
+    private record CapturedRegion(Path outputPath, BufferedImage image, CaptureMode captureMode) {
     }
 
     private record OverlayState(boolean previewEnabled) {

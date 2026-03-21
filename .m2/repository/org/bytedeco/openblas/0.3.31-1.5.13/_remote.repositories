@@ -1,0 +1,13 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Sat Mar 21 15:19:45 CST 2026
+openblas-0.3.31-1.5.13-macosx-arm64.jar>central=
+openblas-0.3.31-1.5.13-android-arm64.jar>central=
+openblas-0.3.31-1.5.13-windows-x86_64.jar>central=
+openblas-0.3.31-1.5.13-ios-arm64.jar>central=
+openblas-0.3.31-1.5.13-android-x86_64.jar>central=
+openblas-0.3.31-1.5.13-linux-arm64.jar>central=
+openblas-0.3.31-1.5.13-ios-x86_64.jar>central=
+openblas-0.3.31-1.5.13.jar>central=
+openblas-0.3.31-1.5.13.pom>central=
+openblas-0.3.31-1.5.13-linux-x86_64.jar>central=
+openblas-0.3.31-1.5.13-macosx-x86_64.jar>central=
