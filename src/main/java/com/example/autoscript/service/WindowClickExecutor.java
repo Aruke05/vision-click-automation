@@ -3,17 +3,18 @@ package com.example.autoscript.service;
 import com.example.autoscript.model.AppConfig;
 import com.example.autoscript.model.WindowInfo;
 import com.sun.jna.Pointer;
+import com.sun.jna.platform.win32.Kernel32;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.LPARAM;
 import com.sun.jna.platform.win32.WinDef.POINT;
 import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinDef.WPARAM;
+import com.sun.jna.ptr.IntByReference;
 
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.Robot;
 import java.awt.event.InputEvent;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class WindowClickExecutor implements ActionExecutor {
@@ -31,6 +32,8 @@ public class WindowClickExecutor implements ActionExecutor {
     private static final int INPUT_UNLOCK_SETTLE_DELAY_MS = 45;
     private static final int LEFT_BUTTON_RELEASE_WAIT_MS = 180;
     private static final int LEFT_BUTTON_RELEASE_POLL_MS = 8;
+    private static final int FOREGROUND_ATTACH_RETRY = 2;
+    private static final int FOREGROUND_ATTACH_DELAY_MS = 30;
 
     private final WindowService windowService;
     private final Robot robot;
@@ -52,12 +55,8 @@ public class WindowClickExecutor implements ActionExecutor {
         }
 
         boolean backgroundMode = config != null && config.isBackgroundClickMode();
-        boolean forceRobot = requiresPhysicalClick(window);
-        if (backgroundMode || !forceRobot) {
-            boolean postOk = clickByPostMessage(window, clientX, clientY);
-            if (backgroundMode || postOk) {
-                return postOk;
-            }
+        if (backgroundMode) {
+            return clickByPostMessage(window, clientX, clientY);
         }
 
         Point screenPoint = windowService.clientToScreen(window, clientX, clientY);
@@ -69,10 +68,12 @@ public class WindowClickExecutor implements ActionExecutor {
             windowService.bringToFront(window);
             robot.delay(80);
 
-            boolean foregroundReady = waitForeground(window, forceRobot ? 4 : 2, 35);
+            boolean foregroundReady = waitForeground(window, 4, 35);
             if (!foregroundReady) {
-                forceClickByRobot(window, screenPoint);
-                return true;
+                boolean activated = tryActivateWithThreadAttach(window);
+                if (!activated || !waitForeground(window, 2, FOREGROUND_ATTACH_DELAY_MS)) {
+                    throw new IllegalStateException("目标窗口未获得前台焦点，已取消真实点击以避免误点前台窗口");
+                }
             }
             if (!isForegroundWindow(window)) {
                 throw new IllegalStateException("目标窗口未获得前台焦点，已取消真实点击以避免误点前台窗口");
@@ -98,15 +99,6 @@ public class WindowClickExecutor implements ActionExecutor {
         robot.delay(20);
         robot.keyRelease(keyCode);
         return true;
-    }
-
-    private boolean requiresPhysicalClick(WindowInfo window) {
-        String className = window == null || window.getClassName() == null
-                ? ""
-                : window.getClassName().trim().toLowerCase(Locale.ROOT);
-        return className.contains("unreal")
-                || className.contains("unity")
-                || className.contains("chrome_widgetwin");
     }
 
     private boolean isForegroundWindow(WindowInfo window) {
@@ -145,20 +137,66 @@ public class WindowClickExecutor implements ActionExecutor {
         return moveOk && downOk && upOk;
     }
 
-    private void forceClickByRobot(WindowInfo window, Point screenPoint) {
-        for (int i = 0; i < 3; i++) {
-            windowService.bringToFront(window);
-            robot.delay(35);
-            if (!isForegroundWindow(window)) {
-                continue;
-            }
-            clickByRobot(screenPoint);
-            robot.delay(30);
-            if (isForegroundWindow(window)) {
-                return;
-            }
+    private boolean tryActivateWithThreadAttach(WindowInfo window) {
+        if (window == null || !isValidWindowHandle(window.getHandle())) {
+            return false;
         }
-        throw new IllegalStateException("目标窗口未获得前台焦点，已取消真实点击以避免误点前台窗口");
+        HWND target = window.getHandle();
+        for (int i = 0; i < FOREGROUND_ATTACH_RETRY; i++) {
+            HWND foreground = User32Compat.INSTANCE.GetForegroundWindow();
+            int currentThreadId = Kernel32.INSTANCE.GetCurrentThreadId();
+            int targetThreadId = queryWindowThreadId(target);
+            int foregroundThreadId = queryWindowThreadId(foreground);
+            boolean attachedTarget = false;
+            boolean attachedForeground = false;
+            try {
+                if (targetThreadId != 0 && targetThreadId != currentThreadId) {
+                    attachedTarget = User32Compat.INSTANCE.AttachThreadInput(currentThreadId, targetThreadId, true);
+                }
+                if (foregroundThreadId != 0 && foregroundThreadId != currentThreadId && foregroundThreadId != targetThreadId) {
+                    attachedForeground = User32Compat.INSTANCE.AttachThreadInput(currentThreadId, foregroundThreadId, true);
+                }
+                windowService.bringToFront(window);
+                User32Compat.INSTANCE.BringWindowToTop(target);
+                User32Compat.INSTANCE.SetForegroundWindow(target);
+                User32Compat.INSTANCE.SetActiveWindow(target);
+                if (isForegroundWindow(window)) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+                // no-op
+            } finally {
+                if (attachedForeground) {
+                    try {
+                        User32Compat.INSTANCE.AttachThreadInput(currentThreadId, foregroundThreadId, false);
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (attachedTarget) {
+                    try {
+                        User32Compat.INSTANCE.AttachThreadInput(currentThreadId, targetThreadId, false);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            robot.delay(FOREGROUND_ATTACH_DELAY_MS);
+        }
+        return isForegroundWindow(window);
+    }
+
+    private int queryWindowThreadId(HWND hWnd) {
+        if (!isValidWindowHandle(hWnd)) {
+            return 0;
+        }
+        try {
+            return User32Compat.INSTANCE.GetWindowThreadProcessId(hWnd, new IntByReference());
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private boolean isValidWindowHandle(HWND hWnd) {
+        return hWnd != null && hWnd.getPointer() != null && Pointer.nativeValue(hWnd.getPointer()) != 0L;
     }
 
     private void clickByRobot(Point nativeScreenPoint) {
@@ -315,7 +353,9 @@ public class WindowClickExecutor implements ActionExecutor {
             inputBlocked = tryBlockInput(true);
             if (lockedPoint != null) {
                 cursorClipped = tryClipCursor(lockedPoint.x, lockedPoint.y);
-                startWatchdog();
+                if (!inputBlocked || !cursorClipped) {
+                    startWatchdog();
+                }
             }
         }
 

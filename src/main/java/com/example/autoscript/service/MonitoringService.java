@@ -161,7 +161,7 @@ public class MonitoringService {
             Thread.currentThread().interrupt();
         } catch (IllegalStateException e) {
             if (e.getMessage() != null && e.getMessage().contains("目标窗口未获得前台焦点")) {
-                log("点击前台焦点失败，但已按配置继续运行并强制尝试真实点击。详情: " + e.getMessage());
+                log("点击前台焦点失败，本次点击已取消以避免误点，监控继续。详情: " + e.getMessage());
                 return;
             }
             if (e.getMessage() != null && e.getMessage().contains("鼠标移动失败")) {

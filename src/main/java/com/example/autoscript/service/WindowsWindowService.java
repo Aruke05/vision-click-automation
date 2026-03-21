@@ -24,6 +24,7 @@ public class WindowsWindowService implements WindowService {
     private static final int SWP_NOSIZE = 0x0001;
     private static final int SWP_NOMOVE = 0x0002;
     private static final int SWP_NOACTIVATE = 0x0010;
+    private static final HWND HWND_TOP = new HWND(Pointer.createConstant(0));
     private static final HWND HWND_BOTTOM = new HWND(Pointer.createConstant(1));
 
     @Override
@@ -117,7 +118,20 @@ public class WindowsWindowService implements WindowService {
 
     @Override
     public void bringToFront(WindowInfo window) {
-        User32Compat.INSTANCE.SetForegroundWindow(window.getHandle());
+        HWND hWnd = window.getHandle();
+        User32Compat.INSTANCE.ShowWindow(hWnd, SW_RESTORE);
+        User32Compat.INSTANCE.BringWindowToTop(hWnd);
+        User32Compat.INSTANCE.SetWindowPos(
+                hWnd,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE
+        );
+        User32Compat.INSTANCE.SetForegroundWindow(hWnd);
+        User32Compat.INSTANCE.SetActiveWindow(hWnd);
     }
 
     @Override
