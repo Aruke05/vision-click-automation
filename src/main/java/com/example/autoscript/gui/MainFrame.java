@@ -862,7 +862,8 @@ public class MainFrame extends JFrame {
         if (syncingConditionEditor) {
             return;
         }
-        if (previewOverlayEnabled) {
+        boolean shouldRefreshPreview = previewOverlayEnabled;
+        if (shouldRefreshPreview) {
             hidePreviewOverlays();
             regionOverlayPositionLogged = false;
             clickOverlayPositionLogged = false;
@@ -870,19 +871,31 @@ public class MainFrame extends JFrame {
         int selectedRow = conditionTable.getSelectedRow();
         if (selectedRow < 0) {
             showConditionEditorPlaceholder("未选中条件，请先选中后点击“编辑选中条件”");
+            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
             return;
         }
         ConditionConfig condition = conditionTableModel.getConditionAt(selectedRow);
         if (condition == null) {
             showConditionEditorPlaceholder("所选条件不存在，请重新选择");
+            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
             return;
         }
         if (editingConditionRow == selectedRow) {
             updateEditingConditionLabel(selectedRow, condition);
+            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
             return;
         }
         String name = resolveConditionName(condition, selectedRow);
         showConditionEditorPlaceholder("已选中: " + name + "，点击“编辑选中条件”开始编辑");
+        refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
+    }
+
+    private void refreshPreviewAfterConditionSwitch(boolean shouldRefreshPreview) {
+        if (!shouldRefreshPreview) {
+            return;
+        }
+        refreshRegionOverlayQuietly();
+        refreshClickOverlayQuietly();
     }
 
     private void beginEditSelectedCondition() {
@@ -1198,7 +1211,12 @@ public class MainFrame extends JFrame {
             return;
         }
 
-        AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
+        ConditionConfig selectedCondition = resolveSelectedConditionForPreview();
+        if (selectedCondition == null) {
+            regionOverlay.hideOverlay();
+            return;
+        }
+        AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), selectedCondition);
         Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
         normalizeRegionCoordinateModeIfNeeded(config, clientRect, true);
         ensureReferenceSizeIfMissing(config, clientRect, false);
@@ -1221,7 +1239,12 @@ public class MainFrame extends JFrame {
             return;
         }
 
-        AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), readConditionFromEditor());
+        ConditionConfig selectedCondition = resolveSelectedConditionForPreview();
+        if (selectedCondition == null) {
+            clickOverlay.hide();
+            return;
+        }
+        AppConfig config = mergeGlobalWithCondition(readGlobalConfigFromForm(), selectedCondition);
         Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
         normalizeClickCoordinateModeIfNeeded(config, clientRect, true);
         ensureReferenceSizeIfMissing(config, clientRect, false);
@@ -1234,6 +1257,20 @@ public class MainFrame extends JFrame {
             clickOverlayPositionLogged = true;
             log("点击位置坐标(native)=" + nativePoint + ", overlay=" + overlayPoint);
         }
+    }
+
+    private ConditionConfig resolveSelectedConditionForPreview() {
+        int selectedRow = conditionTable.getSelectedRow();
+        if (selectedRow < 0) {
+            return null;
+        }
+        if (editingConditionRow == selectedRow && !syncingConditionEditor) {
+            try {
+                return readConditionFromEditor();
+            } catch (Exception ignored) {
+            }
+        }
+        return conditionTableModel.getConditionAt(selectedRow);
     }
 
     private Rectangle toOverlayCoordinates(Rectangle nativeRect) {
