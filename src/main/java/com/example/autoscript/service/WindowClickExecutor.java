@@ -74,6 +74,9 @@ public class WindowClickExecutor implements ActionExecutor {
                 forceClickByRobot(window, screenPoint);
                 return true;
             }
+            if (!isForegroundWindow(window)) {
+                throw new IllegalStateException("目标窗口未获得前台焦点，已取消真实点击以避免误点前台窗口");
+            }
             clickByRobot(screenPoint);
             return true;
         } finally {
@@ -146,12 +149,16 @@ public class WindowClickExecutor implements ActionExecutor {
         for (int i = 0; i < 3; i++) {
             windowService.bringToFront(window);
             robot.delay(35);
+            if (!isForegroundWindow(window)) {
+                continue;
+            }
             clickByRobot(screenPoint);
             robot.delay(30);
             if (isForegroundWindow(window)) {
                 return;
             }
         }
+        throw new IllegalStateException("目标窗口未获得前台焦点，已取消真实点击以避免误点前台窗口");
     }
 
     private void clickByRobot(Point nativeScreenPoint) {
