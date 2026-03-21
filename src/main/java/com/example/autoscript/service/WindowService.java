@@ -23,5 +23,7 @@ public interface WindowService {
 
     void bringToFront(WindowInfo window);
 
+    void moveToBack(WindowInfo window);
+
     Optional<WindowInfo> tryRestoreBinding(List<WindowInfo> windows, long pid, String title, String className);
 }

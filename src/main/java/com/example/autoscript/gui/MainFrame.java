@@ -102,6 +102,7 @@ public class MainFrame extends JFrame {
     private final JSpinner intervalSpinner = new JSpinner(new SpinnerNumberModel(500, 50, 60000, 50));
     private final JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(90, 1, 100, 1));
     private final JCheckBox repeatTriggerCheckBox = new JCheckBox("连续命中重复触发");
+    private final JCheckBox moveWindowToBackAfterTriggerCheckBox = new JCheckBox("触发后将绑定窗口移到最底层");
     private final JCheckBox backgroundClickModeCheckBox = new JCheckBox("后台点击模式(不抢前台/不移动鼠标)");
     private final JTextField startHotkeyField = new JTextField("F9");
     private final JTextField stopHotkeyField = new JTextField("F10");
@@ -220,6 +221,7 @@ public class MainFrame extends JFrame {
     private void installBasicConfigAutoSaveListeners() {
         intervalSpinner.addChangeListener(e -> scheduleBasicConfigAutoSave());
         repeatTriggerCheckBox.addActionListener(e -> scheduleBasicConfigAutoSave());
+        moveWindowToBackAfterTriggerCheckBox.addActionListener(e -> scheduleBasicConfigAutoSave());
         backgroundClickModeCheckBox.addActionListener(e -> scheduleBasicConfigAutoSave());
 
         startHotkeyField.addActionListener(e -> scheduleBasicConfigAutoSave());
@@ -325,6 +327,7 @@ public class MainFrame extends JFrame {
         int row = 0;
         addFormRow(form, gbc, row++, "轮询间隔(ms)", intervalSpinner);
         addFormRow(form, gbc, row++, "重复触发", repeatTriggerCheckBox);
+        addFormRow(form, gbc, row++, "触发后窗口置底", moveWindowToBackAfterTriggerCheckBox);
         addFormRow(form, gbc, row++, "点击模式", backgroundClickModeCheckBox);
         addFormRow(form, gbc, row++, "截图策略", new JLabel("绑定窗口时自动探测并固定模式"));
         addFormRow(form, gbc, row++, "启动热键", startHotkeyField);
@@ -1458,6 +1461,7 @@ public class MainFrame extends JFrame {
 
             monitoringService.start(boundWindow, currentConfig, pollingConditions);
             log("重复触发: " + (currentConfig.isRepeatTrigger() ? "开启" : "关闭"));
+            log("触发后窗口置底: " + (currentConfig.isMoveWindowToBackAfterTrigger() ? "开启" : "关闭"));
             log("点击模式: " + (currentConfig.isBackgroundClickMode() ? "后台消息点击" : "前台真实点击"));
             log("截图策略: " + captureModeLabel(currentConfig.getCaptureMode()));
             log("热键: 启动=" + currentConfig.getStartHotkey() + ", 停止=" + currentConfig.getStopHotkey());
@@ -1776,6 +1780,7 @@ public class MainFrame extends JFrame {
         AppConfig config = new AppConfig();
         config.setIntervalMs(((Number) intervalSpinner.getValue()).intValue());
         config.setRepeatTrigger(repeatTriggerCheckBox.isSelected());
+        config.setMoveWindowToBackAfterTrigger(moveWindowToBackAfterTriggerCheckBox.isSelected());
         config.setBackgroundClickMode(backgroundClickModeCheckBox.isSelected());
         config.setCaptureMode(resolveBoundCaptureMode());
         config.setStartHotkey(GlobalHotkeyService.normalizeHotkeyText(startHotkeyField.getText(), "F9"));
@@ -1828,6 +1833,7 @@ public class MainFrame extends JFrame {
         try {
             intervalSpinner.setValue(config.getIntervalMs());
             repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
+            moveWindowToBackAfterTriggerCheckBox.setSelected(config.isMoveWindowToBackAfterTrigger());
             backgroundClickModeCheckBox.setSelected(config.isBackgroundClickMode());
             String normalizedStart = "F9";
             String normalizedStop = "F10";
@@ -1875,6 +1881,7 @@ public class MainFrame extends JFrame {
         ConditionConfig sourceCondition = condition == null ? new ConditionConfig() : condition;
         merged.setIntervalMs(sourceGlobal.getIntervalMs());
         merged.setRepeatTrigger(sourceGlobal.isRepeatTrigger());
+        merged.setMoveWindowToBackAfterTrigger(sourceGlobal.isMoveWindowToBackAfterTrigger());
         merged.setBackgroundClickMode(sourceGlobal.isBackgroundClickMode());
         merged.setCaptureMode(sourceGlobal.getCaptureMode());
         merged.setStartHotkey(sourceGlobal.getStartHotkey());

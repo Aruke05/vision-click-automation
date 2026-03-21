@@ -135,6 +135,7 @@ public class MonitoringService {
                     boolean allowRepeatTrigger = config.isRepeatTrigger();
                     if (allowRepeatTrigger || !Objects.equals(lastMatchedConditionKey, matchedConditionKey)) {
                         pollingCondition.getRule().runActions(context);
+                        moveWindowToBackIfNeeded(window, config, cycleNo, prefix);
                         if (allowRepeatTrigger && Objects.equals(lastMatchedConditionKey, matchedConditionKey)) {
                             log("轮询#" + cycleNo + " 持续命中，已重复触发动作" + prefix + "；" + detail);
                         } else {
@@ -210,6 +211,18 @@ public class MonitoringService {
         String state = result.matched() ? "T" : "F";
         String score = String.format("%.4f", result.score());
         return name + "=" + state + "(score=" + score + ",loc=" + result.location() + ",msg=" + result.message() + ")";
+    }
+
+    private void moveWindowToBackIfNeeded(WindowInfo window, AppConfig config, long cycleNo, String prefix) {
+        if (window == null || config == null || !config.isMoveWindowToBackAfterTrigger()) {
+            return;
+        }
+        try {
+            windowService.moveToBack(window);
+            log("轮询#" + cycleNo + " 动作完成后已将窗口置于底层" + prefix);
+        } catch (Exception e) {
+            log("轮询#" + cycleNo + " 动作完成后窗口置底失败" + prefix + ": " + e.getMessage());
+        }
     }
 
     public static final class PollingCondition {

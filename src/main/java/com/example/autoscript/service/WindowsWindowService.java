@@ -2,6 +2,7 @@ package com.example.autoscript.service;
 
 import com.example.autoscript.model.WindowInfo;
 import com.sun.jna.Native;
+import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.POINT;
 import com.sun.jna.platform.win32.WinDef.RECT;
@@ -20,6 +21,10 @@ import java.util.Optional;
 public class WindowsWindowService implements WindowService {
 
     private static final int SW_RESTORE = 9;
+    private static final int SWP_NOSIZE = 0x0001;
+    private static final int SWP_NOMOVE = 0x0002;
+    private static final int SWP_NOACTIVATE = 0x0010;
+    private static final HWND HWND_BOTTOM = new HWND(Pointer.createConstant(1));
 
     @Override
     public List<WindowInfo> listWindows() {
@@ -113,6 +118,19 @@ public class WindowsWindowService implements WindowService {
     @Override
     public void bringToFront(WindowInfo window) {
         User32Compat.INSTANCE.SetForegroundWindow(window.getHandle());
+    }
+
+    @Override
+    public void moveToBack(WindowInfo window) {
+        User32Compat.INSTANCE.SetWindowPos(
+                window.getHandle(),
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        );
     }
 
     @Override

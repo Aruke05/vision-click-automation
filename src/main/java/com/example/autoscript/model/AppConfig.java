@@ -14,8 +14,9 @@ public class AppConfig implements Serializable {
     private MonitorRegion monitorRegion = new MonitorRegion();
     private int clickX = 100;
     private int clickY = 100;
-    private boolean repeatTrigger = false;
+    private boolean repeatTrigger = true;
     private boolean backgroundClickMode = false;
+    private boolean moveWindowToBackAfterTrigger = true;
     private CaptureMode captureMode = CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN;
     private String startHotkey = "F9";
     private String stopHotkey = "F10";
@@ -99,6 +100,14 @@ public class AppConfig implements Serializable {
 
     public void setBackgroundClickMode(boolean backgroundClickMode) {
         this.backgroundClickMode = backgroundClickMode;
+    }
+
+    public boolean isMoveWindowToBackAfterTrigger() {
+        return moveWindowToBackAfterTrigger;
+    }
+
+    public void setMoveWindowToBackAfterTrigger(boolean moveWindowToBackAfterTrigger) {
+        this.moveWindowToBackAfterTrigger = moveWindowToBackAfterTrigger;
     }
 
     public CaptureMode getCaptureMode() {
