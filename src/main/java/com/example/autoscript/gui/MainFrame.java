@@ -128,7 +128,7 @@ public class MainFrame extends JFrame {
         this.configService = new ConfigService();
         this.imageMatcher = new OpenCvTemplateMatcher();
         this.actionExecutor = new WindowClickExecutor(windowService);
-        this.captureService = new RobotCaptureService(windowService);
+        this.captureService = new RobotCaptureService(windowService, this::log);
         this.monitoringService = new MonitoringService(windowService, this.captureService, this::log);
         this.hotkeyService = new GlobalHotkeyService();
         this.runningAsAdmin = detectRunningAsAdmin();
@@ -1153,6 +1153,9 @@ public class MainFrame extends JFrame {
             if (isMostlyWhite(image)) {
                 log("警告: 截图几乎全白，目标窗口可能为独占全屏/受保护渲染。建议切换为窗口化或无边框窗口化后再试。");
             }
+            if (config.getCaptureMode() == CaptureMode.WINDOW_HANDLE && isMostlyBlack(image)) {
+                log("警告: 句柄截图几乎全黑，目标窗口可能不支持 PrintWindow（如硬件加速/受保护渲染）。建议以管理员启动，或切换为“屏幕截图（原方式）”。");
+            }
             JOptionPane.showMessageDialog(this, "截图已保存:\n" + output, "完成", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception e) {
             showError("截图判断区失败", e);
@@ -1228,6 +1231,33 @@ public class MainFrame extends JFrame {
             return false;
         }
         return (double) white / (double) total >= 0.98D;
+    }
+
+    private boolean isMostlyBlack(BufferedImage image) {
+        if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) {
+            return false;
+        }
+        int width = image.getWidth();
+        int height = image.getHeight();
+        long total = 0L;
+        long black = 0L;
+        int step = Math.max(1, Math.min(width, height) / 80);
+        for (int y = 0; y < height; y += step) {
+            for (int x = 0; x < width; x += step) {
+                int rgb = image.getRGB(x, y);
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+                if (r <= 10 && g <= 10 && b <= 10) {
+                    black++;
+                }
+                total++;
+            }
+        }
+        if (total <= 0) {
+            return false;
+        }
+        return (double) black / (double) total >= 0.98D;
     }
 
     private void saveConfig() {

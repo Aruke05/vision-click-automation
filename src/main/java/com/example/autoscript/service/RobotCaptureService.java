@@ -21,12 +21,16 @@ import java.awt.image.DirectColorModel;
 import java.awt.image.Raster;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 
 public class RobotCaptureService implements CaptureService {
 
     private static final int PW_CLIENTONLY = 0x00000001;
     private static final int PW_RENDERFULLCONTENT = 0x00000002;
     private static final int SRCCOPY = 0x00CC0020;
+    private static final int BLACK_LUMA_THRESHOLD = 10;
+    private static final double BLACK_PIXEL_RATIO_THRESHOLD = 0.985D;
+    private static final int BLACK_DYNAMIC_RANGE_THRESHOLD = 18;
     private static final DirectColorModel SCREENSHOT_COLOR_MODEL = new DirectColorModel(24, 0x00FF0000, 0x0000FF00, 0x000000FF);
     private static final int[] SCREENSHOT_BAND_MASKS = {
             SCREENSHOT_COLOR_MODEL.getRedMask(),
@@ -35,9 +39,15 @@ public class RobotCaptureService implements CaptureService {
     };
 
     private final WindowService windowService;
+    private final Consumer<String> logger;
 
     public RobotCaptureService(WindowService windowService) throws Exception {
+        this(windowService, null);
+    }
+
+    public RobotCaptureService(WindowService windowService, Consumer<String> logger) throws Exception {
         this.windowService = windowService;
+        this.logger = logger;
     }
 
     @Override
@@ -54,9 +64,39 @@ public class RobotCaptureService implements CaptureService {
         }
         CaptureMode effectiveMode = captureMode == null ? CaptureMode.SCREEN : captureMode;
         if (effectiveMode == CaptureMode.WINDOW_HANDLE) {
-            return captureByWindowHandle(window, captureRect);
+            try {
+                return captureByWindowHandle(window, captureRect);
+            } catch (IllegalStateException e) {
+                if (!shouldFallbackToScreen(e)) {
+                    throw e;
+                }
+                return captureByScreenWithFallback(captureRect, e);
+            }
         }
         return captureByScreen(captureRect);
+    }
+
+    private BufferedImage captureByScreenWithFallback(Rectangle captureRect, IllegalStateException handleFailure) {
+        String reason = handleFailure.getMessage();
+        if (reason == null || reason.isBlank()) {
+            reason = handleFailure.getClass().getSimpleName();
+        }
+        log("窗口句柄截图失败，自动回退到屏幕截图。详情: " + reason);
+        try {
+            return captureByScreen(captureRect);
+        } catch (Exception screenException) {
+            throw new IllegalStateException(reason + "；且自动回退屏幕截图失败: " + screenException.getMessage(), screenException);
+        }
+    }
+
+    private boolean shouldFallbackToScreen(IllegalStateException e) {
+        String message = e == null ? null : e.getMessage();
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        return message.contains("窗口句柄抓图失败")
+                || message.contains("PrintWindow")
+                || message.contains("位图近乎全黑");
     }
 
     private BufferedImage captureByScreen(Rectangle captureRect) {
@@ -135,7 +175,11 @@ public class RobotCaptureService implements CaptureService {
         if (windowImage != null) {
             int localX = captureRect.x - windowRect.x;
             int localY = captureRect.y - windowRect.y;
-            return safeSubImage(windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
+            BufferedImage extracted = safeSubImage(windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
+            if (!isMostlyBlack(extracted)) {
+                return extracted;
+            }
+            attempts.add("窗口位图近乎全黑");
         }
 
         Rectangle clientRect = windowService.getClientRectOnScreen(window);
@@ -149,11 +193,15 @@ public class RobotCaptureService implements CaptureService {
         if (clientImage != null) {
             int localX = captureRect.x - clientRect.x;
             int localY = captureRect.y - clientRect.y;
-            return safeSubImage(clientImage, localX, localY, captureRect.width, captureRect.height, "Client位图");
+            BufferedImage extracted = safeSubImage(clientImage, localX, localY, captureRect.width, captureRect.height, "Client位图");
+            if (!isMostlyBlack(extracted)) {
+                return extracted;
+            }
+            attempts.add("Client位图近乎全黑");
         }
 
-        throw new IllegalStateException("窗口句柄抓图失败（PrintWindow 不可用）：" + String.join(" | ", attempts)
-                + "。可切换截图模式为“屏幕截图（原方式）”继续使用。");
+        throw new IllegalStateException("窗口句柄抓图失败（PrintWindow 不可用或返回黑帧）：" + String.join(" | ", attempts)
+                + "。建议：以管理员启动；目标窗口改为窗口化/无边框并尝试关闭硬件加速；或切换截图模式为“屏幕截图（原方式）”。");
     }
 
     private Rectangle queryWindowRectOnScreen(WindowInfo window) {
@@ -279,6 +327,46 @@ public class RobotCaptureService implements CaptureService {
             g2d.dispose();
         }
         return copy;
+    }
+
+    private boolean isMostlyBlack(BufferedImage image) {
+        if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) {
+            return false;
+        }
+        int width = image.getWidth();
+        int height = image.getHeight();
+        int step = Math.max(1, Math.min(width, height) / 80);
+
+        long total = 0L;
+        long black = 0L;
+        int minLuma = 255;
+        int maxLuma = 0;
+        for (int y = 0; y < height; y += step) {
+            for (int x = 0; x < width; x += step) {
+                int rgb = image.getRGB(x, y);
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+                int luma = (r * 299 + g * 587 + b * 114) / 1000;
+                if (luma <= BLACK_LUMA_THRESHOLD) {
+                    black++;
+                }
+                minLuma = Math.min(minLuma, luma);
+                maxLuma = Math.max(maxLuma, luma);
+                total++;
+            }
+        }
+        if (total <= 0) {
+            return false;
+        }
+        double blackRatio = (double) black / (double) total;
+        return blackRatio >= BLACK_PIXEL_RATIO_THRESHOLD && (maxLuma - minLuma) <= BLACK_DYNAMIC_RANGE_THRESHOLD;
+    }
+
+    private void log(String message) {
+        if (logger != null && message != null && !message.isBlank()) {
+            logger.accept(message);
+        }
     }
 
 }
