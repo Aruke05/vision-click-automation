@@ -45,6 +45,12 @@ public class RobotCaptureService implements CaptureService {
     private static final int PRF_ERASEBKGND = 0x00000008;
     private static final int PRF_CHILDREN = 0x00000010;
     private static final int PRF_OWNED = 0x00000020;
+    private static final int EDGE_DARK_LUMA_MAX = 18;
+    private static final int EDGE_DYNAMIC_RANGE_MAX = 10;
+    private static final double EDGE_BLACK_RATIO_MIN = 0.992D;
+    private static final double CONTENT_TRIM_RATIO_MIN = 0.04D;
+    private static final int CONTENT_TRIM_MIN_PIXELS = 8;
+    private static final long CONTENT_MAPPING_CACHE_TTL_NANOS = 2_000_000_000L;
     private static final int BLACK_LUMA_THRESHOLD = 10;
     private static final double BLACK_PIXEL_RATIO_THRESHOLD = 0.985D;
     private static final int BLACK_DYNAMIC_RANGE_THRESHOLD = 18;
@@ -59,7 +65,11 @@ public class RobotCaptureService implements CaptureService {
     private final Consumer<String> logger;
     private final ConcurrentHashMap<Long, ContentMapping> contentMappingCache = new ConcurrentHashMap<>();
 
-    private record ContentMapping(int sourceWidth, int sourceHeight, Rectangle contentRect, boolean enabled) {
+    private record ContentMapping(int sourceWidth,
+                                  int sourceHeight,
+                                  Rectangle contentRect,
+                                  boolean enabled,
+                                  long detectedAtNanos) {
     }
 
     public RobotCaptureService(WindowService windowService) throws Exception {
@@ -190,23 +200,6 @@ public class RobotCaptureService implements CaptureService {
         requestWindowRedraw(hWnd);
 
         List<String> attempts = new ArrayList<>();
-        BufferedImage windowImage = tryPrintWindowCapture(
-                hWnd,
-                windowRect.width,
-                windowRect.height,
-                new int[]{PW_RENDERFULLCONTENT, 0},
-                attempts
-        );
-        if (windowImage != null) {
-            if (validateFrame && isMostlyBlack(windowImage)) {
-                attempts.add("窗口位图近乎全黑");
-            } else {
-                int localX = captureRect.x - windowRect.x;
-                int localY = captureRect.y - windowRect.y;
-                return extractHandleSubImage(hWnd, windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
-            }
-        }
-
         Rectangle clientRect = windowService.getClientRectOnScreen(window);
         BufferedImage clientImage = tryPrintWindowCapture(
                 hWnd,
@@ -222,25 +215,6 @@ public class RobotCaptureService implements CaptureService {
                 int localX = captureRect.x - clientRect.x;
                 int localY = captureRect.y - clientRect.y;
                 return extractHandleSubImage(hWnd, clientImage, localX, localY, captureRect.width, captureRect.height, "Client位图");
-            }
-        }
-
-        BufferedImage wmPrintWindowImage = tryWmPrintCapture(
-                hWnd,
-                windowRect.width,
-                windowRect.height,
-                WM_PRINT,
-                PRF_CHECKVISIBLE | PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND | PRF_CHILDREN | PRF_OWNED,
-                "WM_PRINT窗口",
-                attempts
-        );
-        if (wmPrintWindowImage != null) {
-            if (validateFrame && isMostlyBlack(wmPrintWindowImage)) {
-                attempts.add("WM_PRINT窗口位图近乎全黑");
-            } else {
-                int localX = captureRect.x - windowRect.x;
-                int localY = captureRect.y - windowRect.y;
-                return extractHandleSubImage(hWnd, wmPrintWindowImage, localX, localY, captureRect.width, captureRect.height, "WM_PRINT窗口位图");
             }
         }
 
@@ -276,6 +250,42 @@ public class RobotCaptureService implements CaptureService {
                 int localX = captureRect.x - clientRect.x;
                 int localY = captureRect.y - clientRect.y;
                 return extractHandleSubImage(hWnd, bitBltClientImage, localX, localY, captureRect.width, captureRect.height, "BitBlt客户端位图");
+            }
+        }
+
+        BufferedImage windowImage = tryPrintWindowCapture(
+                hWnd,
+                windowRect.width,
+                windowRect.height,
+                new int[]{PW_RENDERFULLCONTENT, 0},
+                attempts
+        );
+        if (windowImage != null) {
+            if (validateFrame && isMostlyBlack(windowImage)) {
+                attempts.add("窗口位图近乎全黑");
+            } else {
+                int localX = captureRect.x - windowRect.x;
+                int localY = captureRect.y - windowRect.y;
+                return extractHandleSubImage(hWnd, windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
+            }
+        }
+
+        BufferedImage wmPrintWindowImage = tryWmPrintCapture(
+                hWnd,
+                windowRect.width,
+                windowRect.height,
+                WM_PRINT,
+                PRF_CHECKVISIBLE | PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND | PRF_CHILDREN | PRF_OWNED,
+                "WM_PRINT窗口",
+                attempts
+        );
+        if (wmPrintWindowImage != null) {
+            if (validateFrame && isMostlyBlack(wmPrintWindowImage)) {
+                attempts.add("WM_PRINT窗口位图近乎全黑");
+            } else {
+                int localX = captureRect.x - windowRect.x;
+                int localY = captureRect.y - windowRect.y;
+                return extractHandleSubImage(hWnd, wmPrintWindowImage, localX, localY, captureRect.width, captureRect.height, "WM_PRINT窗口位图");
             }
         }
 
@@ -422,20 +432,32 @@ public class RobotCaptureService implements CaptureService {
     private ContentMapping resolveContentMapping(HWND hWnd, BufferedImage image) {
         if (hWnd == null || image == null) {
             Rectangle rect = image == null ? new Rectangle(0, 0, 0, 0) : new Rectangle(0, 0, image.getWidth(), image.getHeight());
-            return new ContentMapping(rect.width, rect.height, rect, false);
+            return new ContentMapping(rect.width, rect.height, rect, false, System.nanoTime());
         }
 
+        long now = System.nanoTime();
         long key = Pointer.nativeValue(hWnd.getPointer());
         ContentMapping cached = contentMappingCache.get(key);
-        if (cached != null && cached.sourceWidth() == image.getWidth() && cached.sourceHeight() == image.getHeight()) {
+        if (cached != null
+                && cached.sourceWidth() == image.getWidth()
+                && cached.sourceHeight() == image.getHeight()
+                && now - cached.detectedAtNanos() <= CONTENT_MAPPING_CACHE_TTL_NANOS) {
             return cached;
         }
 
         Rectangle fullRect = new Rectangle(0, 0, image.getWidth(), image.getHeight());
         Rectangle contentRect = detectContentRect(image);
         boolean enabled = shouldEnableContentMapping(fullRect, contentRect);
-        ContentMapping mapping = new ContentMapping(image.getWidth(), image.getHeight(), contentRect, enabled);
+        ContentMapping mapping = new ContentMapping(image.getWidth(), image.getHeight(), contentRect, enabled, now);
         contentMappingCache.put(key, mapping);
+        if (enabled && (cached == null
+                || !cached.enabled()
+                || !cached.contentRect().equals(contentRect)
+                || cached.sourceWidth() != image.getWidth()
+                || cached.sourceHeight() != image.getHeight())) {
+            log("句柄内容映射已更新: src=" + image.getWidth() + "x" + image.getHeight()
+                    + " -> content=" + contentRect);
+        }
         return mapping;
     }
 
@@ -445,34 +467,23 @@ public class RobotCaptureService implements CaptureService {
         }
         int width = image.getWidth();
         int height = image.getHeight();
-        int step = Math.max(2, Math.min(width, height) / 180);
-        int threshold = BLACK_LUMA_THRESHOLD + 2;
+        int sampleStepY = Math.max(1, height / 220);
+        int sampleStepX = Math.max(1, width / 220);
 
-        int minX = width;
-        int minY = height;
-        int maxX = -1;
-        int maxY = -1;
+        int leftPad = detectLeadingBlackColumns(image, sampleStepY);
+        int rightPad = detectTrailingBlackColumns(image, sampleStepY);
+        int topPad = detectLeadingBlackRows(image, sampleStepX);
+        int bottomPad = detectTrailingBlackRows(image, sampleStepX);
 
-        for (int y = 0; y < height; y += step) {
-            for (int x = 0; x < width; x += step) {
-                if (sampleLuma(image, x, y) > threshold) {
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                }
-            }
-        }
+        leftPad = normalizePad(leftPad, width);
+        rightPad = normalizePad(rightPad, width);
+        topPad = normalizePad(topPad, height);
+        bottomPad = normalizePad(bottomPad, height);
 
-        if (maxX < minX || maxY < minY) {
-            return new Rectangle(0, 0, width, height);
-        }
-
-        int padding = Math.max(2, step * 2);
-        int left = Math.max(0, minX - padding);
-        int top = Math.max(0, minY - padding);
-        int right = Math.min(width, maxX + padding + 1);
-        int bottom = Math.min(height, maxY + padding + 1);
+        int left = clamp(leftPad, 0, Math.max(0, width - 1));
+        int top = clamp(topPad, 0, Math.max(0, height - 1));
+        int right = clamp(width - rightPad, left + 1, width);
+        int bottom = clamp(height - bottomPad, top + 1, height);
         return new Rectangle(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
     }
 
@@ -483,13 +494,119 @@ public class RobotCaptureService implements CaptureService {
         if (contentRect.width <= 0 || contentRect.height <= 0) {
             return false;
         }
-        double widthRatio = (double) contentRect.width / (double) fullRect.width;
-        double heightRatio = (double) contentRect.height / (double) fullRect.height;
-        if (widthRatio > 0.92D && heightRatio > 0.92D) {
+        int trimWidth = fullRect.width - contentRect.width;
+        int trimHeight = fullRect.height - contentRect.height;
+        if (trimWidth < CONTENT_TRIM_MIN_PIXELS && trimHeight < CONTENT_TRIM_MIN_PIXELS) {
             return false;
         }
-        int tolerance = Math.max(3, Math.min(fullRect.width, fullRect.height) / 120);
-        return contentRect.x <= tolerance && contentRect.y <= tolerance;
+        double trimWidthRatio = (double) trimWidth / (double) fullRect.width;
+        double trimHeightRatio = (double) trimHeight / (double) fullRect.height;
+        return trimWidthRatio >= CONTENT_TRIM_RATIO_MIN
+                || trimHeightRatio >= CONTENT_TRIM_RATIO_MIN;
+    }
+
+    private int detectLeadingBlackColumns(BufferedImage image, int sampleStepY) {
+        int width = image.getWidth();
+        int pad = 0;
+        for (int x = 0; x < width; x++) {
+            if (!isEdgeBlackColumn(image, x, sampleStepY)) {
+                break;
+            }
+            pad++;
+        }
+        return pad;
+    }
+
+    private int detectTrailingBlackColumns(BufferedImage image, int sampleStepY) {
+        int width = image.getWidth();
+        int pad = 0;
+        for (int x = width - 1; x >= 0; x--) {
+            if (!isEdgeBlackColumn(image, x, sampleStepY)) {
+                break;
+            }
+            pad++;
+        }
+        return pad;
+    }
+
+    private int detectLeadingBlackRows(BufferedImage image, int sampleStepX) {
+        int height = image.getHeight();
+        int pad = 0;
+        for (int y = 0; y < height; y++) {
+            if (!isEdgeBlackRow(image, y, sampleStepX)) {
+                break;
+            }
+            pad++;
+        }
+        return pad;
+    }
+
+    private int detectTrailingBlackRows(BufferedImage image, int sampleStepX) {
+        int height = image.getHeight();
+        int pad = 0;
+        for (int y = height - 1; y >= 0; y--) {
+            if (!isEdgeBlackRow(image, y, sampleStepX)) {
+                break;
+            }
+            pad++;
+        }
+        return pad;
+    }
+
+    private boolean isEdgeBlackColumn(BufferedImage image, int x, int sampleStepY) {
+        int height = image.getHeight();
+        long total = 0L;
+        long black = 0L;
+        int min = 255;
+        int max = 0;
+        for (int y = 0; y < height; y += sampleStepY) {
+            int luma = sampleLuma(image, x, y);
+            if (luma <= EDGE_DARK_LUMA_MAX) {
+                black++;
+            }
+            min = Math.min(min, luma);
+            max = Math.max(max, luma);
+            total++;
+        }
+        if (total <= 0L) {
+            return false;
+        }
+        double blackRatio = (double) black / (double) total;
+        return blackRatio >= EDGE_BLACK_RATIO_MIN
+                && (max - min) <= EDGE_DYNAMIC_RANGE_MAX
+                && max <= EDGE_DARK_LUMA_MAX + 2;
+    }
+
+    private boolean isEdgeBlackRow(BufferedImage image, int y, int sampleStepX) {
+        int width = image.getWidth();
+        long total = 0L;
+        long black = 0L;
+        int min = 255;
+        int max = 0;
+        for (int x = 0; x < width; x += sampleStepX) {
+            int luma = sampleLuma(image, x, y);
+            if (luma <= EDGE_DARK_LUMA_MAX) {
+                black++;
+            }
+            min = Math.min(min, luma);
+            max = Math.max(max, luma);
+            total++;
+        }
+        if (total <= 0L) {
+            return false;
+        }
+        double blackRatio = (double) black / (double) total;
+        return blackRatio >= EDGE_BLACK_RATIO_MIN
+                && (max - min) <= EDGE_DYNAMIC_RANGE_MAX
+                && max <= EDGE_DARK_LUMA_MAX + 2;
+    }
+
+    private int normalizePad(int rawPad, int totalSize) {
+        if (rawPad <= 0 || totalSize <= 0) {
+            return 0;
+        }
+        int minPad = Math.max(CONTENT_TRIM_MIN_PIXELS, totalSize / 120);
+        return rawPad >= minPad ? rawPad : 0;
     }
 
     private int sampleLuma(BufferedImage image, int x, int y) {
