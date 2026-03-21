@@ -10,6 +10,7 @@ import com.sun.jna.platform.win32.WinDef.POINT;
 import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinDef.WPARAM;
 import com.sun.jna.platform.win32.WinUser;
+import com.sun.jna.platform.win32.WinNT.HANDLE;
 import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.win32.StdCallLibrary;
 import com.sun.jna.win32.W32APIOptions;
@@ -34,6 +35,8 @@ public interface User32Compat extends StdCallLibrary {
     HWND GetForegroundWindow();
     boolean GetClientRect(HWND hWnd, RECT rect);
     boolean PostMessage(HWND hWnd, int msg, WPARAM wParam, LPARAM lParam);
+    LRESULT SendMessage(HWND hWnd, int msg, WPARAM wParam, LPARAM lParam);
+    boolean RedrawWindow(HWND hWnd, RECT lprcUpdate, HANDLE hrgnUpdate, int flags);
     boolean RegisterHotKey(HWND hWnd, int id, int fsModifiers, int vk);
     boolean UnregisterHotKey(HWND hWnd, int id);
     int GetMessage(WinUser.MSG lpMsg, HWND hWnd, int wMsgFilterMin, int wMsgFilterMax);

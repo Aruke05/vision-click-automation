@@ -16,7 +16,7 @@ public class AppConfig implements Serializable {
     private int clickY = 100;
     private boolean repeatTrigger = false;
     private boolean backgroundClickMode = false;
-    private CaptureMode captureMode = CaptureMode.SCREEN;
+    private CaptureMode captureMode = CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN;
     private String startHotkey = "F9";
     private String stopHotkey = "F10";
     private String templatePath = "";
@@ -102,11 +102,11 @@ public class AppConfig implements Serializable {
     }
 
     public CaptureMode getCaptureMode() {
-        return captureMode == null ? CaptureMode.SCREEN : captureMode;
+        return captureMode == null ? CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN : captureMode;
     }
 
     public void setCaptureMode(CaptureMode captureMode) {
-        this.captureMode = captureMode == null ? CaptureMode.SCREEN : captureMode;
+        this.captureMode = captureMode == null ? CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN : captureMode;
     }
 
     public String getStartHotkey() {

@@ -24,7 +24,6 @@ import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
-import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -67,6 +66,8 @@ import java.util.concurrent.TimeUnit;
 
 public class MainFrame extends JFrame {
 
+    private static final CaptureMode DEFAULT_CAPTURE_MODE = CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN;
+
     private final WindowService windowService;
     private final ConfigService configService;
     private final ImageMatcher imageMatcher;
@@ -93,7 +94,6 @@ public class MainFrame extends JFrame {
     private final JSpinner thresholdSpinner = new JSpinner(new SpinnerNumberModel(90, 1, 100, 1));
     private final JCheckBox repeatTriggerCheckBox = new JCheckBox("连续命中重复触发");
     private final JCheckBox backgroundClickModeCheckBox = new JCheckBox("后台点击模式(不抢前台/不移动鼠标)");
-    private final JComboBox<CaptureMode> captureModeComboBox = new JComboBox<>(CaptureMode.values());
     private final JTextField startHotkeyField = new JTextField("F9");
     private final JTextField stopHotkeyField = new JTextField("F10");
     private final JSpinner clickXSpinner = new JSpinner(new SpinnerNumberModel(100, -10000, 10000, 1));
@@ -108,6 +108,7 @@ public class MainFrame extends JFrame {
     private final javax.swing.Timer clickOverlayTimer;
 
     private WindowInfo boundWindow;
+    private CaptureMode boundCaptureMode = DEFAULT_CAPTURE_MODE;
     private AppConfig currentConfig;
     private boolean previewOverlayEnabled = false;
     private boolean regionOverlayErrorLogged = false;
@@ -259,7 +260,7 @@ public class MainFrame extends JFrame {
         addFormRow(form, gbc, row++, "轮询间隔(ms)", intervalSpinner);
         addFormRow(form, gbc, row++, "重复触发", repeatTriggerCheckBox);
         addFormRow(form, gbc, row++, "点击模式", backgroundClickModeCheckBox);
-        addFormRow(form, gbc, row++, "截图模式", captureModeComboBox);
+        addFormRow(form, gbc, row++, "截图策略", new JLabel("绑定窗口时自动探测并固定模式"));
         addFormRow(form, gbc, row++, "启动热键", startHotkeyField);
         addFormRow(form, gbc, row++, "停止热键", stopHotkeyField);
         addFormRow(form, gbc, row++, "热键示例", new JLabel("F9 / F10 / CTRL+F9"));
@@ -418,6 +419,7 @@ public class MainFrame extends JFrame {
             return;
         }
         boundWindow = selected;
+        detectCaptureModeForBoundWindow();
         updateBindStatus();
 
         currentConfig.setLastWindowPid(selected.getProcessId());
@@ -434,6 +436,7 @@ public class MainFrame extends JFrame {
             stopMonitoring();
         }
         boundWindow = null;
+        boundCaptureMode = DEFAULT_CAPTURE_MODE;
         updateBindStatus();
         previewOverlayEnabled = false;
         regionOverlayErrorLogged = false;
@@ -452,8 +455,53 @@ public class MainFrame extends JFrame {
         if (boundWindow == null) {
             bindStatusLabel.setText("当前未绑定窗口");
         } else {
-            bindStatusLabel.setText("当前绑定: " + boundWindow.toDisplayText());
+            bindStatusLabel.setText("当前绑定: " + boundWindow.toDisplayText() + " | 截图策略=" + captureModeLabel(boundCaptureMode));
         }
+    }
+
+    private void detectCaptureModeForBoundWindow() {
+        if (boundWindow == null) {
+            boundCaptureMode = DEFAULT_CAPTURE_MODE;
+            return;
+        }
+        try {
+            Rectangle clientRect = windowService.getClientRectOnScreen(boundWindow);
+            if (clientRect.width <= 0 || clientRect.height <= 0) {
+                boundCaptureMode = CaptureMode.SCREEN;
+                log("绑定探测: client 区域无效，已使用屏幕截图。");
+                return;
+            }
+
+            MonitorRegion probeRegion = new MonitorRegion();
+            probeRegion.setX(0);
+            probeRegion.setY(0);
+            probeRegion.setWidth(clientRect.width);
+            probeRegion.setHeight(clientRect.height);
+            probeRegion.setReferenceWidth(clientRect.width);
+            probeRegion.setReferenceHeight(clientRect.height);
+
+            BufferedImage probeImage = captureService.capture(boundWindow, probeRegion, CaptureMode.WINDOW_HANDLE);
+            if (isMostlyBlack(probeImage)) {
+                boundCaptureMode = CaptureMode.SCREEN;
+                log("绑定探测: 句柄截图近乎全黑，后续使用屏幕截图。");
+            } else {
+                boundCaptureMode = CaptureMode.WINDOW_HANDLE;
+                log("绑定探测: 句柄截图可用，后续使用后台句柄截图。");
+            }
+        } catch (Exception e) {
+            boundCaptureMode = CaptureMode.SCREEN;
+            log("绑定探测: 句柄截图不可用，后续使用屏幕截图。详情: " + e.getMessage());
+        }
+    }
+
+    private String captureModeLabel(CaptureMode mode) {
+        if (mode == CaptureMode.WINDOW_HANDLE) {
+            return "后台句柄截图";
+        }
+        if (mode == CaptureMode.SCREEN) {
+            return "屏幕截图";
+        }
+        return mode == null ? DEFAULT_CAPTURE_MODE.toString() : mode.toString();
     }
 
     private void chooseTemplates() {
@@ -1057,6 +1105,7 @@ public class MainFrame extends JFrame {
             monitoringService.start(boundWindow, currentConfig, pollingConditions);
             log("重复触发: " + (currentConfig.isRepeatTrigger() ? "开启" : "关闭"));
             log("点击模式: " + (currentConfig.isBackgroundClickMode() ? "后台消息点击" : "前台真实点击"));
+            log("截图策略: " + captureModeLabel(currentConfig.getCaptureMode()));
             log("热键: 启动=" + currentConfig.getStartHotkey() + ", 停止=" + currentConfig.getStopHotkey());
             if (currentConfig.isBackgroundClickMode() && isLikelyForegroundInputWindow(boundWindow)) {
                 log("提示: 当前窗口类名为 " + boundWindow.getClassName()
@@ -1153,8 +1202,10 @@ public class MainFrame extends JFrame {
             if (isMostlyWhite(image)) {
                 log("警告: 截图几乎全白，目标窗口可能为独占全屏/受保护渲染。建议切换为窗口化或无边框窗口化后再试。");
             }
-            if (config.getCaptureMode() == CaptureMode.WINDOW_HANDLE && isMostlyBlack(image)) {
-                log("警告: 句柄截图几乎全黑，目标窗口可能不支持 PrintWindow（如硬件加速/受保护渲染）。建议以管理员启动，或切换为“屏幕截图（原方式）”。");
+            if ((config.getCaptureMode() == CaptureMode.WINDOW_HANDLE
+                    || config.getCaptureMode() == CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN)
+                    && isMostlyBlack(image)) {
+                log("警告: 句柄截图几乎全黑，目标窗口可能不支持 PrintWindow（如硬件加速/受保护渲染）。建议以管理员启动并重新绑定窗口触发截图模式探测。");
             }
             JOptionPane.showMessageDialog(this, "截图已保存:\n" + output, "完成", JOptionPane.INFORMATION_MESSAGE);
         } catch (Exception e) {
@@ -1326,10 +1377,17 @@ public class MainFrame extends JFrame {
         config.setIntervalMs(((Number) intervalSpinner.getValue()).intValue());
         config.setRepeatTrigger(repeatTriggerCheckBox.isSelected());
         config.setBackgroundClickMode(backgroundClickModeCheckBox.isSelected());
-        config.setCaptureMode((CaptureMode) captureModeComboBox.getSelectedItem());
+        config.setCaptureMode(resolveBoundCaptureMode());
         config.setStartHotkey(GlobalHotkeyService.normalizeHotkeyText(startHotkeyField.getText(), "F9"));
         config.setStopHotkey(GlobalHotkeyService.normalizeHotkeyText(stopHotkeyField.getText(), "F10"));
         return config;
+    }
+
+    private CaptureMode resolveBoundCaptureMode() {
+        if (boundWindow == null) {
+            return DEFAULT_CAPTURE_MODE;
+        }
+        return boundCaptureMode == null ? DEFAULT_CAPTURE_MODE : boundCaptureMode;
     }
 
     private List<String> parseTemplatePaths(String rawText) {
@@ -1368,7 +1426,6 @@ public class MainFrame extends JFrame {
         intervalSpinner.setValue(config.getIntervalMs());
         repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
         backgroundClickModeCheckBox.setSelected(config.isBackgroundClickMode());
-        captureModeComboBox.setSelectedItem(config.getCaptureMode());
         String normalizedStart = "F9";
         String normalizedStop = "F10";
         try {
@@ -1512,6 +1569,7 @@ public class MainFrame extends JFrame {
             );
             restored.ifPresent(window -> {
                 boundWindow = window;
+                detectCaptureModeForBoundWindow();
                 updateBindStatus();
                 log("已根据配置自动恢复绑定: " + window.toDisplayText());
                 refreshRegionOverlayQuietly();

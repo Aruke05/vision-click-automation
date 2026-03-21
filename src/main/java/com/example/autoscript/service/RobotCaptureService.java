@@ -5,11 +5,14 @@ import com.example.autoscript.model.MonitorRegion;
 import com.example.autoscript.model.WindowInfo;
 import com.sun.jna.Memory;
 import com.sun.jna.Native;
+import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.GDI32;
 import com.sun.jna.platform.win32.WinDef.HBITMAP;
 import com.sun.jna.platform.win32.WinDef.HDC;
 import com.sun.jna.platform.win32.WinDef.HWND;
+import com.sun.jna.platform.win32.WinDef.LRESULT;
 import com.sun.jna.platform.win32.WinDef.RECT;
+import com.sun.jna.platform.win32.WinDef.WPARAM;
 import com.sun.jna.platform.win32.WinGDI;
 import com.sun.jna.platform.win32.WinNT.HANDLE;
 
@@ -21,6 +24,7 @@ import java.awt.image.DirectColorModel;
 import java.awt.image.Raster;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 public class RobotCaptureService implements CaptureService {
@@ -28,6 +32,19 @@ public class RobotCaptureService implements CaptureService {
     private static final int PW_CLIENTONLY = 0x00000001;
     private static final int PW_RENDERFULLCONTENT = 0x00000002;
     private static final int SRCCOPY = 0x00CC0020;
+    private static final int CAPTUREBLT = 0x40000000;
+    private static final int RDW_INVALIDATE = 0x0001;
+    private static final int RDW_ALLCHILDREN = 0x0080;
+    private static final int RDW_UPDATENOW = 0x0100;
+    private static final int RDW_FRAME = 0x0400;
+    private static final int WM_PRINT = 0x0317;
+    private static final int WM_PRINTCLIENT = 0x0318;
+    private static final int PRF_CHECKVISIBLE = 0x00000001;
+    private static final int PRF_NONCLIENT = 0x00000002;
+    private static final int PRF_CLIENT = 0x00000004;
+    private static final int PRF_ERASEBKGND = 0x00000008;
+    private static final int PRF_CHILDREN = 0x00000010;
+    private static final int PRF_OWNED = 0x00000020;
     private static final int BLACK_LUMA_THRESHOLD = 10;
     private static final double BLACK_PIXEL_RATIO_THRESHOLD = 0.985D;
     private static final int BLACK_DYNAMIC_RANGE_THRESHOLD = 18;
@@ -40,6 +57,10 @@ public class RobotCaptureService implements CaptureService {
 
     private final WindowService windowService;
     private final Consumer<String> logger;
+    private final ConcurrentHashMap<Long, ContentMapping> contentMappingCache = new ConcurrentHashMap<>();
+
+    private record ContentMapping(int sourceWidth, int sourceHeight, Rectangle contentRect, boolean enabled) {
+    }
 
     public RobotCaptureService(WindowService windowService) throws Exception {
         this(windowService, null);
@@ -64,8 +85,11 @@ public class RobotCaptureService implements CaptureService {
         }
         CaptureMode effectiveMode = captureMode == null ? CaptureMode.SCREEN : captureMode;
         if (effectiveMode == CaptureMode.WINDOW_HANDLE) {
+            return captureByWindowHandle(window, captureRect, false);
+        }
+        if (effectiveMode == CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN) {
             try {
-                return captureByWindowHandle(window, captureRect);
+                return captureByWindowHandle(window, captureRect, true);
             } catch (IllegalStateException e) {
                 if (!shouldFallbackToScreen(e)) {
                     throw e;
@@ -138,7 +162,7 @@ public class RobotCaptureService implements CaptureService {
                     desktopDc,
                     captureRect.x,
                     captureRect.y,
-                    SRCCOPY
+                    SRCCOPY | CAPTUREBLT
             );
             if (!copied) {
                 throw new IllegalStateException("BitBlt 失败, error=" + Native.getLastError());
@@ -160,9 +184,10 @@ public class RobotCaptureService implements CaptureService {
         }
     }
 
-    private BufferedImage captureByWindowHandle(WindowInfo window, Rectangle captureRect) {
+    private BufferedImage captureByWindowHandle(WindowInfo window, Rectangle captureRect, boolean validateFrame) {
         Rectangle windowRect = queryWindowRectOnScreen(window);
         HWND hWnd = window.getHandle();
+        requestWindowRedraw(hWnd);
 
         List<String> attempts = new ArrayList<>();
         BufferedImage windowImage = tryPrintWindowCapture(
@@ -173,13 +198,13 @@ public class RobotCaptureService implements CaptureService {
                 attempts
         );
         if (windowImage != null) {
-            int localX = captureRect.x - windowRect.x;
-            int localY = captureRect.y - windowRect.y;
-            BufferedImage extracted = safeSubImage(windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
-            if (!isMostlyBlack(extracted)) {
-                return extracted;
+            if (validateFrame && isMostlyBlack(windowImage)) {
+                attempts.add("窗口位图近乎全黑");
+            } else {
+                int localX = captureRect.x - windowRect.x;
+                int localY = captureRect.y - windowRect.y;
+                return extractHandleSubImage(hWnd, windowImage, localX, localY, captureRect.width, captureRect.height, "窗口位图");
             }
-            attempts.add("窗口位图近乎全黑");
         }
 
         Rectangle clientRect = windowService.getClientRectOnScreen(window);
@@ -191,17 +216,71 @@ public class RobotCaptureService implements CaptureService {
                 attempts
         );
         if (clientImage != null) {
-            int localX = captureRect.x - clientRect.x;
-            int localY = captureRect.y - clientRect.y;
-            BufferedImage extracted = safeSubImage(clientImage, localX, localY, captureRect.width, captureRect.height, "Client位图");
-            if (!isMostlyBlack(extracted)) {
-                return extracted;
+            if (validateFrame && isMostlyBlack(clientImage)) {
+                attempts.add("Client位图近乎全黑");
+            } else {
+                int localX = captureRect.x - clientRect.x;
+                int localY = captureRect.y - clientRect.y;
+                return extractHandleSubImage(hWnd, clientImage, localX, localY, captureRect.width, captureRect.height, "Client位图");
             }
-            attempts.add("Client位图近乎全黑");
+        }
+
+        BufferedImage wmPrintWindowImage = tryWmPrintCapture(
+                hWnd,
+                windowRect.width,
+                windowRect.height,
+                WM_PRINT,
+                PRF_CHECKVISIBLE | PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND | PRF_CHILDREN | PRF_OWNED,
+                "WM_PRINT窗口",
+                attempts
+        );
+        if (wmPrintWindowImage != null) {
+            if (validateFrame && isMostlyBlack(wmPrintWindowImage)) {
+                attempts.add("WM_PRINT窗口位图近乎全黑");
+            } else {
+                int localX = captureRect.x - windowRect.x;
+                int localY = captureRect.y - windowRect.y;
+                return extractHandleSubImage(hWnd, wmPrintWindowImage, localX, localY, captureRect.width, captureRect.height, "WM_PRINT窗口位图");
+            }
+        }
+
+        BufferedImage wmPrintClientImage = tryWmPrintCapture(
+                hWnd,
+                clientRect.width,
+                clientRect.height,
+                WM_PRINTCLIENT,
+                PRF_CLIENT | PRF_ERASEBKGND | PRF_CHILDREN,
+                "WM_PRINTCLIENT",
+                attempts
+        );
+        if (wmPrintClientImage != null) {
+            if (validateFrame && isMostlyBlack(wmPrintClientImage)) {
+                attempts.add("WM_PRINTCLIENT位图近乎全黑");
+            } else {
+                int localX = captureRect.x - clientRect.x;
+                int localY = captureRect.y - clientRect.y;
+                return extractHandleSubImage(hWnd, wmPrintClientImage, localX, localY, captureRect.width, captureRect.height, "WM_PRINTCLIENT位图");
+            }
+        }
+
+        BufferedImage bitBltClientImage = tryWindowDcBitBltCapture(
+                hWnd,
+                clientRect.width,
+                clientRect.height,
+                attempts
+        );
+        if (bitBltClientImage != null) {
+            if (validateFrame && isMostlyBlack(bitBltClientImage)) {
+                attempts.add("BitBlt客户端位图近乎全黑");
+            } else {
+                int localX = captureRect.x - clientRect.x;
+                int localY = captureRect.y - clientRect.y;
+                return extractHandleSubImage(hWnd, bitBltClientImage, localX, localY, captureRect.width, captureRect.height, "BitBlt客户端位图");
+            }
         }
 
         throw new IllegalStateException("窗口句柄抓图失败（PrintWindow 不可用或返回黑帧）：" + String.join(" | ", attempts)
-                + "。建议：以管理员启动；目标窗口改为窗口化/无边框并尝试关闭硬件加速；或切换截图模式为“屏幕截图（原方式）”。");
+                + "。建议：以管理员启动；目标窗口改为窗口化/无边框并尝试关闭硬件加速。");
     }
 
     private Rectangle queryWindowRectOnScreen(WindowInfo window) {
@@ -309,6 +388,135 @@ public class RobotCaptureService implements CaptureService {
         );
     }
 
+    private BufferedImage extractHandleSubImage(HWND hWnd,
+                                                BufferedImage source,
+                                                int localX,
+                                                int localY,
+                                                int width,
+                                                int height,
+                                                String sourceName) {
+        if (source == null) {
+            throw new IllegalStateException(sourceName + "为空，无法裁剪");
+        }
+        ContentMapping mapping = resolveContentMapping(hWnd, source);
+        if (!mapping.enabled()) {
+            return safeSubImage(source, localX, localY, width, height, sourceName);
+        }
+
+        Rectangle contentRect = mapping.contentRect();
+        int mappedX = contentRect.x + scaleValue(localX, source.getWidth(), contentRect.width);
+        int mappedY = contentRect.y + scaleValue(localY, source.getHeight(), contentRect.height);
+        int mappedWidth = Math.max(1, scaleValue(width, source.getWidth(), contentRect.width));
+        int mappedHeight = Math.max(1, scaleValue(height, source.getHeight(), contentRect.height));
+
+        int maxX = contentRect.x + contentRect.width;
+        int maxY = contentRect.y + contentRect.height;
+        mappedX = clamp(mappedX, contentRect.x, Math.max(contentRect.x, maxX - 1));
+        mappedY = clamp(mappedY, contentRect.y, Math.max(contentRect.y, maxY - 1));
+        mappedWidth = Math.max(1, Math.min(mappedWidth, maxX - mappedX));
+        mappedHeight = Math.max(1, Math.min(mappedHeight, maxY - mappedY));
+
+        return safeSubImage(source, mappedX, mappedY, mappedWidth, mappedHeight, sourceName + "(内容映射)");
+    }
+
+    private ContentMapping resolveContentMapping(HWND hWnd, BufferedImage image) {
+        if (hWnd == null || image == null) {
+            Rectangle rect = image == null ? new Rectangle(0, 0, 0, 0) : new Rectangle(0, 0, image.getWidth(), image.getHeight());
+            return new ContentMapping(rect.width, rect.height, rect, false);
+        }
+
+        long key = Pointer.nativeValue(hWnd.getPointer());
+        ContentMapping cached = contentMappingCache.get(key);
+        if (cached != null && cached.sourceWidth() == image.getWidth() && cached.sourceHeight() == image.getHeight()) {
+            return cached;
+        }
+
+        Rectangle fullRect = new Rectangle(0, 0, image.getWidth(), image.getHeight());
+        Rectangle contentRect = detectContentRect(image);
+        boolean enabled = shouldEnableContentMapping(fullRect, contentRect);
+        ContentMapping mapping = new ContentMapping(image.getWidth(), image.getHeight(), contentRect, enabled);
+        contentMappingCache.put(key, mapping);
+        return mapping;
+    }
+
+    private Rectangle detectContentRect(BufferedImage image) {
+        if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) {
+            return new Rectangle(0, 0, 0, 0);
+        }
+        int width = image.getWidth();
+        int height = image.getHeight();
+        int step = Math.max(2, Math.min(width, height) / 180);
+        int threshold = BLACK_LUMA_THRESHOLD + 2;
+
+        int minX = width;
+        int minY = height;
+        int maxX = -1;
+        int maxY = -1;
+
+        for (int y = 0; y < height; y += step) {
+            for (int x = 0; x < width; x += step) {
+                if (sampleLuma(image, x, y) > threshold) {
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                }
+            }
+        }
+
+        if (maxX < minX || maxY < minY) {
+            return new Rectangle(0, 0, width, height);
+        }
+
+        int padding = Math.max(2, step * 2);
+        int left = Math.max(0, minX - padding);
+        int top = Math.max(0, minY - padding);
+        int right = Math.min(width, maxX + padding + 1);
+        int bottom = Math.min(height, maxY + padding + 1);
+        return new Rectangle(left, top, Math.max(1, right - left), Math.max(1, bottom - top));
+    }
+
+    private boolean shouldEnableContentMapping(Rectangle fullRect, Rectangle contentRect) {
+        if (fullRect == null || contentRect == null || fullRect.width <= 0 || fullRect.height <= 0) {
+            return false;
+        }
+        if (contentRect.width <= 0 || contentRect.height <= 0) {
+            return false;
+        }
+        double widthRatio = (double) contentRect.width / (double) fullRect.width;
+        double heightRatio = (double) contentRect.height / (double) fullRect.height;
+        if (widthRatio > 0.92D && heightRatio > 0.92D) {
+            return false;
+        }
+        int tolerance = Math.max(3, Math.min(fullRect.width, fullRect.height) / 120);
+        return contentRect.x <= tolerance && contentRect.y <= tolerance;
+    }
+
+    private int sampleLuma(BufferedImage image, int x, int y) {
+        int rgb = image.getRGB(x, y);
+        int r = (rgb >> 16) & 0xFF;
+        int g = (rgb >> 8) & 0xFF;
+        int b = rgb & 0xFF;
+        return (r * 299 + g * 587 + b * 114) / 1000;
+    }
+
+    private int scaleValue(int value, int sourceSize, int targetSize) {
+        if (sourceSize <= 0 || targetSize <= 0) {
+            return value;
+        }
+        return (int) Math.round((double) value * (double) targetSize / (double) sourceSize);
+    }
+
+    private int clamp(int value, int min, int max) {
+        if (value < min) {
+            return min;
+        }
+        if (value > max) {
+            return max;
+        }
+        return value;
+    }
+
     private BufferedImage safeSubImage(BufferedImage source, int x, int y, int width, int height, String sourceName) {
         if (source == null) {
             throw new IllegalStateException(sourceName + "为空，无法裁剪");
@@ -366,6 +574,173 @@ public class RobotCaptureService implements CaptureService {
     private void log(String message) {
         if (logger != null && message != null && !message.isBlank()) {
             logger.accept(message);
+        }
+    }
+
+    private void requestWindowRedraw(HWND hWnd) {
+        if (hWnd == null) {
+            return;
+        }
+        try {
+            User32Compat.INSTANCE.RedrawWindow(
+                    hWnd,
+                    null,
+                    null,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
+            );
+        } catch (Exception ignored) {
+        }
+    }
+
+    private BufferedImage tryWindowDcBitBltCapture(HWND hWnd,
+                                                   int width,
+                                                   int height,
+                                                   List<String> attempts) {
+        if (width <= 0 || height <= 0) {
+            attempts.add("BitBlt尺寸无效(" + width + "x" + height + ")");
+            return null;
+        }
+        try {
+            BufferedImage image = bitBltWindowDcToImage(hWnd, width, height);
+            if (image != null) {
+                attempts.add("BitBlt(GetDC) 成功");
+                return image;
+            }
+            attempts.add("BitBlt(GetDC) 返回false(error=" + Native.getLastError() + ")");
+        } catch (Exception e) {
+            attempts.add("BitBlt(GetDC) 异常(" + e.getMessage() + ")");
+        }
+        return null;
+    }
+
+    private BufferedImage tryWmPrintCapture(HWND hWnd,
+                                            int width,
+                                            int height,
+                                            int message,
+                                            int printFlags,
+                                            String label,
+                                            List<String> attempts) {
+        if (width <= 0 || height <= 0) {
+            attempts.add(label + "尺寸无效(" + width + "x" + height + ")");
+            return null;
+        }
+        try {
+            BufferedImage image = wmPrintToImage(hWnd, width, height, message, printFlags, label, attempts);
+            if (image != null) {
+                return image;
+            }
+            attempts.add(label + " 返回null");
+        } catch (Exception e) {
+            attempts.add(label + " 异常(" + e.getMessage() + ")");
+        }
+        return null;
+    }
+
+    private BufferedImage wmPrintToImage(HWND hWnd,
+                                         int width,
+                                         int height,
+                                         int message,
+                                         int printFlags,
+                                         String label,
+                                         List<String> attempts) {
+        HDC windowDc = null;
+        HDC memoryDc = null;
+        HBITMAP bitmap = null;
+        HANDLE oldBitmap = null;
+        try {
+            windowDc = User32Compat.INSTANCE.GetDC(hWnd);
+            if (windowDc == null) {
+                throw new IllegalStateException("GetDC 失败, error=" + Native.getLastError());
+            }
+            memoryDc = GDI32.INSTANCE.CreateCompatibleDC(windowDc);
+            if (memoryDc == null) {
+                throw new IllegalStateException("CreateCompatibleDC 失败, error=" + Native.getLastError());
+            }
+            bitmap = GDI32.INSTANCE.CreateCompatibleBitmap(windowDc, width, height);
+            if (bitmap == null) {
+                throw new IllegalStateException("CreateCompatibleBitmap 失败, error=" + Native.getLastError());
+            }
+            oldBitmap = GDI32.INSTANCE.SelectObject(memoryDc, bitmap);
+            if (oldBitmap == null) {
+                throw new IllegalStateException("SelectObject 失败, error=" + Native.getLastError());
+            }
+
+            long hdcValue = Pointer.nativeValue(memoryDc.getPointer());
+            LRESULT result = User32Compat.INSTANCE.SendMessage(
+                    hWnd,
+                    message,
+                    new WPARAM(hdcValue),
+                    new com.sun.jna.platform.win32.WinDef.LPARAM(printFlags)
+            );
+            attempts.add(label + " 结果=" + result.longValue());
+            return readBitmapToImage(windowDc, bitmap, width, height);
+        } finally {
+            if (oldBitmap != null && memoryDc != null) {
+                GDI32.INSTANCE.SelectObject(memoryDc, oldBitmap);
+            }
+            if (bitmap != null) {
+                GDI32.INSTANCE.DeleteObject(bitmap);
+            }
+            if (memoryDc != null) {
+                GDI32.INSTANCE.DeleteDC(memoryDc);
+            }
+            if (windowDc != null) {
+                User32Compat.INSTANCE.ReleaseDC(hWnd, windowDc);
+            }
+        }
+    }
+
+    private BufferedImage bitBltWindowDcToImage(HWND hWnd, int width, int height) {
+        HDC windowDc = null;
+        HDC memoryDc = null;
+        HBITMAP bitmap = null;
+        HANDLE oldBitmap = null;
+        try {
+            windowDc = User32Compat.INSTANCE.GetDC(hWnd);
+            if (windowDc == null) {
+                throw new IllegalStateException("GetDC 失败, error=" + Native.getLastError());
+            }
+            memoryDc = GDI32.INSTANCE.CreateCompatibleDC(windowDc);
+            if (memoryDc == null) {
+                throw new IllegalStateException("CreateCompatibleDC 失败, error=" + Native.getLastError());
+            }
+            bitmap = GDI32.INSTANCE.CreateCompatibleBitmap(windowDc, width, height);
+            if (bitmap == null) {
+                throw new IllegalStateException("CreateCompatibleBitmap 失败, error=" + Native.getLastError());
+            }
+            oldBitmap = GDI32.INSTANCE.SelectObject(memoryDc, bitmap);
+            if (oldBitmap == null) {
+                throw new IllegalStateException("SelectObject 失败, error=" + Native.getLastError());
+            }
+
+            boolean copied = GDI32.INSTANCE.BitBlt(
+                    memoryDc,
+                    0,
+                    0,
+                    width,
+                    height,
+                    windowDc,
+                    0,
+                    0,
+                    SRCCOPY | CAPTUREBLT
+            );
+            if (!copied) {
+                return null;
+            }
+            return readBitmapToImage(windowDc, bitmap, width, height);
+        } finally {
+            if (oldBitmap != null && memoryDc != null) {
+                GDI32.INSTANCE.SelectObject(memoryDc, oldBitmap);
+            }
+            if (bitmap != null) {
+                GDI32.INSTANCE.DeleteObject(bitmap);
+            }
+            if (memoryDc != null) {
+                GDI32.INSTANCE.DeleteDC(memoryDc);
+            }
+            if (windowDc != null) {
+                User32Compat.INSTANCE.ReleaseDC(hWnd, windowDc);
+            }
         }
     }
 
