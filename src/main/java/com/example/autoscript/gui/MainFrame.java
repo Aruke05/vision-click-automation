@@ -24,11 +24,15 @@ import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.DropMode;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
@@ -39,6 +43,7 @@ import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingUtilities;
+import javax.swing.TransferHandler;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
 import javax.swing.event.DocumentEvent;
@@ -47,6 +52,9 @@ import javax.swing.event.ChangeListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import java.awt.datatransfer.DataFlavor;
+import java.awt.datatransfer.StringSelection;
+import java.awt.datatransfer.Transferable;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
@@ -56,6 +64,8 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.nio.file.Files;
@@ -133,6 +143,7 @@ public class MainFrame extends JFrame {
     private boolean logPanelCollapsed = false;
     private int lastLogDividerLocation = -1;
     private boolean suppressBasicConfigAutoSave = false;
+    private ConditionConfig copiedConditionClipboard;
     private final Path projectRootPath = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     private final Path scriptDirPath = projectRootPath.resolve("script").toAbsolutePath().normalize();
     private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
@@ -344,6 +355,7 @@ public class MainFrame extends JFrame {
                 onConditionSelectionChanged();
             }
         });
+        installConditionTableContextMenuAndDragReorder();
 
         JPanel tablePanel = new JPanel(new BorderLayout(6, 6));
         tablePanel.setBorder(BorderFactory.createTitledBorder("轮询条件顺序（命中即停止本轮）"));
@@ -351,19 +363,22 @@ public class MainFrame extends JFrame {
 
         JPanel manageButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         JButton addButton = new JButton("新增条件");
-        JButton duplicateButton = new JButton("复制条件");
+        JButton copyButton = new JButton("复制条件");
+        JButton pasteButton = new JButton("粘贴条件");
         JButton editButton = new JButton("编辑选中条件");
         JButton removeButton = new JButton("删除条件");
         JButton moveUpButton = new JButton("上移");
         JButton moveDownButton = new JButton("下移");
         addButton.addActionListener(e -> addConditionFromEditor());
-        duplicateButton.addActionListener(e -> duplicateSelectedCondition());
+        copyButton.addActionListener(e -> copySelectedConditionToClipboard());
+        pasteButton.addActionListener(e -> pasteConditionFromClipboard());
         editButton.addActionListener(e -> beginEditSelectedCondition());
         removeButton.addActionListener(e -> removeSelectedCondition());
         moveUpButton.addActionListener(e -> moveSelectedCondition(-1));
         moveDownButton.addActionListener(e -> moveSelectedCondition(1));
         manageButtons.add(addButton);
-        manageButtons.add(duplicateButton);
+        manageButtons.add(copyButton);
+        manageButtons.add(pasteButton);
         manageButtons.add(editButton);
         manageButtons.add(removeButton);
         manageButtons.add(moveUpButton);
@@ -380,6 +395,57 @@ public class MainFrame extends JFrame {
         JPanel root = new JPanel(new BorderLayout(0, 0));
         root.add(splitPane, BorderLayout.CENTER);
         return root;
+    }
+
+    private void installConditionTableContextMenuAndDragReorder() {
+        conditionTable.setDragEnabled(true);
+        conditionTable.setDropMode(DropMode.INSERT_ROWS);
+        conditionTable.setTransferHandler(new ConditionRowTransferHandler());
+
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem copyItem = new JMenuItem("复制条件");
+        JMenuItem pasteItem = new JMenuItem("粘贴条件");
+        JMenuItem deleteItem = new JMenuItem("删除条件");
+        copyItem.addActionListener(e -> copySelectedConditionToClipboard());
+        pasteItem.addActionListener(e -> pasteConditionFromClipboard());
+        deleteItem.addActionListener(e -> removeSelectedCondition());
+        menu.add(copyItem);
+        menu.add(pasteItem);
+        menu.add(deleteItem);
+
+        MouseAdapter popupListener = new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                maybeShowConditionPopupMenu(e, menu, copyItem, pasteItem, deleteItem);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                maybeShowConditionPopupMenu(e, menu, copyItem, pasteItem, deleteItem);
+            }
+        };
+        conditionTable.addMouseListener(popupListener);
+    }
+
+    private void maybeShowConditionPopupMenu(
+            MouseEvent event,
+            JPopupMenu menu,
+            JMenuItem copyItem,
+            JMenuItem pasteItem,
+            JMenuItem deleteItem
+    ) {
+        if (event == null || !event.isPopupTrigger()) {
+            return;
+        }
+        int row = conditionTable.rowAtPoint(event.getPoint());
+        if (row >= 0) {
+            conditionTable.getSelectionModel().setSelectionInterval(row, row);
+        }
+        boolean hasSelected = conditionTable.getSelectedRow() >= 0;
+        copyItem.setEnabled(hasSelected);
+        deleteItem.setEnabled(hasSelected);
+        pasteItem.setEnabled(copiedConditionClipboard != null);
+        menu.show(event.getComponent(), event.getX(), event.getY());
     }
 
     private JPanel buildConditionEditorContainer() {
@@ -968,7 +1034,7 @@ public class MainFrame extends JFrame {
         log("已新增条件: " + condition.getName());
     }
 
-    private void duplicateSelectedCondition() {
+    private void copySelectedConditionToClipboard() {
         applyEditorToSelectedConditionQuietly();
         int selectedRow = conditionTable.getSelectedRow();
         if (selectedRow < 0) {
@@ -979,15 +1045,28 @@ public class MainFrame extends JFrame {
         if (condition == null) {
             return;
         }
-        if (condition.getName().isBlank()) {
-            condition.setName("条件" + (conditionTableModel.getConditionCount() + 1));
-        } else {
-            condition.setName(condition.getName() + "-副本");
+        copiedConditionClipboard = new ConditionConfig(condition);
+        copiedConditionClipboard.setTemplatePaths(normalizeTemplatePaths(copiedConditionClipboard.getTemplatePaths()));
+        log("已复制条件到剪贴板: " + resolveConditionName(condition, selectedRow));
+    }
+
+    private void pasteConditionFromClipboard() {
+        applyEditorToSelectedConditionQuietly();
+        if (copiedConditionClipboard == null) {
+            JOptionPane.showMessageDialog(this, "剪贴板为空，请先在任意方案中复制一个条件。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return;
         }
-        int index = conditionTableModel.addCondition(condition);
+        ConditionConfig pasted = new ConditionConfig(copiedConditionClipboard);
+        pasted.setTemplatePaths(normalizeTemplatePaths(pasted.getTemplatePaths()));
+        if (pasted.getName().isBlank()) {
+            pasted.setName("条件" + (conditionTableModel.getConditionCount() + 1));
+        } else {
+            pasted.setName(pasted.getName() + "-副本");
+        }
+        int index = conditionTableModel.addCondition(pasted);
         conditionTable.getSelectionModel().setSelectionInterval(index, index);
-        showConditionEditorPlaceholder("已复制条件，请点击“编辑选中条件”继续编辑");
-        log("已复制条件: " + condition.getName());
+        showConditionEditorPlaceholder("已粘贴条件，请点击“编辑选中条件”继续编辑");
+        log("已粘贴条件: " + pasted.getName());
     }
 
     private void applyEditorToSelectedConditionQuietly() {
@@ -1033,6 +1112,70 @@ public class MainFrame extends JFrame {
         int target = conditionTableModel.moveCondition(selectedRow, offset);
         conditionTable.getSelectionModel().setSelectionInterval(target, target);
         showConditionEditorPlaceholder("条件顺序已调整，请点击“编辑选中条件”继续编辑");
+    }
+
+    private boolean moveConditionByDragAndDrop(int fromRow, int dropInsertRow) {
+        int rowCount = conditionTableModel.getConditionCount();
+        if (fromRow < 0 || fromRow >= rowCount || rowCount <= 1) {
+            return false;
+        }
+        int insertRow = Math.max(0, Math.min(dropInsertRow, rowCount));
+        int targetRow = insertRow > fromRow ? insertRow - 1 : insertRow;
+        if (targetRow < 0 || targetRow >= rowCount || targetRow == fromRow) {
+            return false;
+        }
+        ConditionConfig moving = conditionTableModel.getConditionAt(fromRow);
+        int movedTo = conditionTableModel.moveConditionTo(fromRow, targetRow);
+        conditionTable.getSelectionModel().setSelectionInterval(movedTo, movedTo);
+        showConditionEditorPlaceholder("条件顺序已调整，请点击“编辑选中条件”继续编辑");
+        log("已拖拽调整条件顺序: " + resolveConditionName(moving, movedTo) + " -> #" + (movedTo + 1));
+        return true;
+    }
+
+    private final class ConditionRowTransferHandler extends TransferHandler {
+        @Override
+        public int getSourceActions(JComponent c) {
+            return MOVE;
+        }
+
+        @Override
+        protected Transferable createTransferable(JComponent c) {
+            int selectedRow = conditionTable.getSelectedRow();
+            if (selectedRow < 0) {
+                return null;
+            }
+            return new StringSelection(Integer.toString(selectedRow));
+        }
+
+        @Override
+        public boolean canImport(TransferSupport support) {
+            if (!support.isDrop()) {
+                return false;
+            }
+            if (!support.isDataFlavorSupported(DataFlavor.stringFlavor)) {
+                return false;
+            }
+            if (!(support.getDropLocation() instanceof JTable.DropLocation dropLocation)) {
+                return false;
+            }
+            return dropLocation.getRow() >= 0;
+        }
+
+        @Override
+        public boolean importData(TransferSupport support) {
+            if (!canImport(support)) {
+                return false;
+            }
+            try {
+                String rowText = (String) support.getTransferable().getTransferData(DataFlavor.stringFlavor);
+                int fromRow = Integer.parseInt(rowText.trim());
+                JTable.DropLocation dropLocation = (JTable.DropLocation) support.getDropLocation();
+                return moveConditionByDragAndDrop(fromRow, dropLocation.getRow());
+            } catch (Exception e) {
+                log("拖拽排序失败: " + e.getMessage());
+                return false;
+            }
+        }
     }
 
     private void loadConditionToEditor(ConditionConfig condition) {

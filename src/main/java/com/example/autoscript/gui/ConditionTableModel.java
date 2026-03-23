@@ -81,6 +81,19 @@ public class ConditionTableModel extends AbstractTableModel {
         return target;
     }
 
+    public int moveConditionTo(int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= conditions.size() || toIndex < 0 || toIndex >= conditions.size()) {
+            return fromIndex;
+        }
+        if (fromIndex == toIndex) {
+            return fromIndex;
+        }
+        ConditionConfig moving = conditions.remove(fromIndex);
+        conditions.add(toIndex, moving);
+        fireTableDataChanged();
+        return toIndex;
+    }
+
     public int getConditionCount() {
         return conditions.size();
     }
