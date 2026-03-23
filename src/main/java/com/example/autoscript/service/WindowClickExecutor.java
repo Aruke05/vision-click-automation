@@ -34,6 +34,7 @@ public class WindowClickExecutor implements ActionExecutor {
     private static final int LEFT_BUTTON_RELEASE_POLL_MS = 8;
     private static final int FOREGROUND_ATTACH_RETRY = 2;
     private static final int FOREGROUND_ATTACH_DELAY_MS = 30;
+    private static final int MINIMIZED_COORD_THRESHOLD = -32000;
 
     private final WindowService windowService;
     private final Robot robot;
@@ -47,6 +48,9 @@ public class WindowClickExecutor implements ActionExecutor {
     @Override
     public boolean clickClient(WindowInfo window, int clientX, int clientY, AppConfig config) {
         Rectangle clientRect = windowService.getClientRectOnScreen(window);
+        if (isClientRectTemporarilyUnavailable(clientRect)) {
+            throw new IllegalStateException("窗口客户端区域暂不可用，可能处于最小化/窗口切换中: " + clientRect);
+        }
         if (clientX < 0 || clientY < 0 || clientX >= clientRect.width || clientY >= clientRect.height) {
             throw new IllegalArgumentException("点击坐标越界: client=(" + clientX + "," + clientY
                     + "), clientSize=" + clientRect.width + "x" + clientRect.height
@@ -126,6 +130,16 @@ public class WindowClickExecutor implements ActionExecutor {
         long pa = Pointer.nativeValue(a.getPointer());
         long pb = Pointer.nativeValue(b.getPointer());
         return pa != 0L && pa == pb;
+    }
+
+    private boolean isClientRectTemporarilyUnavailable(Rectangle clientRect) {
+        if (clientRect == null) {
+            return true;
+        }
+        if (clientRect.width <= 0 || clientRect.height <= 0) {
+            return true;
+        }
+        return clientRect.x <= MINIMIZED_COORD_THRESHOLD || clientRect.y <= MINIMIZED_COORD_THRESHOLD;
     }
 
     private boolean clickByPostMessage(WindowInfo window, int clientX, int clientY) {

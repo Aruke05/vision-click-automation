@@ -94,16 +94,15 @@ public class MonitoringService {
             return;
         }
 
+        long cycleNo = cycleCounter.incrementAndGet();
         try {
-            long cycleNo = cycleCounter.incrementAndGet();
             if (!windowService.isAlive(window)) {
                 log("目标窗口已失效，自动停止监控");
                 stop();
                 return;
             }
 
-            if (windowService.isMinimized(window)) {
-                log("目标窗口当前最小化，跳过本轮检测");
+            if (!restoreWindowFromMinimizedIfNeeded(window, cycleNo)) {
                 return;
             }
 
@@ -160,6 +159,12 @@ public class MonitoringService {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (IllegalStateException e) {
+            if (e.getMessage() != null && e.getMessage().contains("窗口客户端区域暂不可用")) {
+                if (!tryRecoverFromUnavailableClient(window, cycleNo, e.getMessage())) {
+                    log("目标窗口客户端区域暂不可用（可能最小化/切换桌面），已跳过本轮检测，监控继续。详情: " + e.getMessage());
+                }
+                return;
+            }
             if (e.getMessage() != null && e.getMessage().contains("目标窗口未获得前台焦点")) {
                 log("点击前台焦点失败，本次点击已取消以避免误点，监控继续。详情: " + e.getMessage());
                 return;
@@ -222,6 +227,53 @@ public class MonitoringService {
             log("轮询#" + cycleNo + " 动作完成后已将窗口置于底层" + prefix);
         } catch (Exception e) {
             log("轮询#" + cycleNo + " 动作完成后窗口置底失败" + prefix + ": " + e.getMessage());
+        }
+    }
+
+    private boolean restoreWindowFromMinimizedIfNeeded(WindowInfo window, long cycleNo) {
+        if (window == null || !windowService.isMinimized(window)) {
+            return true;
+        }
+        try {
+            windowService.restoreIfMinimized(window);
+            if (windowService.isMinimized(window)) {
+                log("轮询#" + cycleNo + " 检测到窗口最小化，自动恢复失败，已跳过本轮检测");
+                return false;
+            }
+            try {
+                windowService.moveToBack(window);
+                log("轮询#" + cycleNo + " 检测到窗口最小化，已自动恢复并置于底层，继续监控");
+            } catch (Exception e) {
+                log("轮询#" + cycleNo + " 检测到窗口最小化，已自动恢复，但置底失败，继续监控: " + e.getMessage());
+            }
+            return true;
+        } catch (Exception e) {
+            log("轮询#" + cycleNo + " 检测到窗口最小化，自动恢复异常，已跳过本轮检测: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean tryRecoverFromUnavailableClient(WindowInfo window, long cycleNo, String detail) {
+        if (window == null || !windowService.isMinimized(window)) {
+            return false;
+        }
+        try {
+            windowService.restoreIfMinimized(window);
+            if (windowService.isMinimized(window)) {
+                log("轮询#" + cycleNo + " 客户端区域暂不可用，检测到窗口仍最小化且自动恢复失败，已跳过本轮。详情: " + detail);
+                return true;
+            }
+            try {
+                windowService.moveToBack(window);
+                log("轮询#" + cycleNo + " 客户端区域暂不可用，已自动恢复并置于底层，将在下一轮继续监控。详情: " + detail);
+            } catch (Exception e) {
+                log("轮询#" + cycleNo + " 客户端区域暂不可用，已自动恢复，但置底失败，将在下一轮继续监控。详情: "
+                        + detail + "；置底失败: " + e.getMessage());
+            }
+            return true;
+        } catch (Exception e) {
+            log("轮询#" + cycleNo + " 客户端区域暂不可用，自动恢复异常，已跳过本轮。详情: " + detail + "；恢复异常: " + e.getMessage());
+            return true;
         }
     }
 

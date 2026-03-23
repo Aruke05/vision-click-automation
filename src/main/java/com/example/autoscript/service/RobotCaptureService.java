@@ -54,6 +54,7 @@ public class RobotCaptureService implements CaptureService {
     private static final int BLACK_LUMA_THRESHOLD = 10;
     private static final double BLACK_PIXEL_RATIO_THRESHOLD = 0.985D;
     private static final int BLACK_DYNAMIC_RANGE_THRESHOLD = 18;
+    private static final int MINIMIZED_COORD_THRESHOLD = -32000;
     private static final DirectColorModel SCREENSHOT_COLOR_MODEL = new DirectColorModel(24, 0x00FF0000, 0x0000FF00, 0x000000FF);
     private static final int[] SCREENSHOT_BAND_MASKS = {
             SCREENSHOT_COLOR_MODEL.getRedMask(),
@@ -84,6 +85,9 @@ public class RobotCaptureService implements CaptureService {
     @Override
     public BufferedImage capture(WindowInfo window, MonitorRegion region, CaptureMode captureMode) {
         Rectangle clientRect = windowService.getClientRectOnScreen(window);
+        if (isClientRectTemporarilyUnavailable(clientRect)) {
+            throw new IllegalStateException("窗口客户端区域暂不可用，可能处于最小化/窗口切换中: " + clientRect);
+        }
         Rectangle target = region.resolveWithin(clientRect);
         Rectangle captureRect = target.intersection(clientRect);
         if (captureRect.width <= 0 || captureRect.height <= 0) {
@@ -108,6 +112,16 @@ public class RobotCaptureService implements CaptureService {
             }
         }
         return captureByScreen(captureRect);
+    }
+
+    private boolean isClientRectTemporarilyUnavailable(Rectangle clientRect) {
+        if (clientRect == null) {
+            return true;
+        }
+        if (clientRect.width <= 0 || clientRect.height <= 0) {
+            return true;
+        }
+        return clientRect.x <= MINIMIZED_COORD_THRESHOLD || clientRect.y <= MINIMIZED_COORD_THRESHOLD;
     }
 
     private BufferedImage captureByScreenWithFallback(Rectangle captureRect, IllegalStateException handleFailure) {
