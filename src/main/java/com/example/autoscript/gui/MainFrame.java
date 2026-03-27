@@ -3,19 +3,24 @@ package com.example.autoscript.gui;
 import com.example.autoscript.model.AppConfig;
 import com.example.autoscript.model.CaptureMode;
 import com.example.autoscript.model.ConditionConfig;
+import com.example.autoscript.model.ConditionTriggerActionConfig;
+import com.example.autoscript.model.ConditionTriggerActionType;
 import com.example.autoscript.model.MonitorRegion;
 import com.example.autoscript.model.WindowInfo;
 import com.example.autoscript.script.ClickActionStep;
 import com.example.autoscript.script.ImageTemplateCondition;
 import com.example.autoscript.script.MonitorRule;
+import com.example.autoscript.script.StopMonitoringActionStep;
 import com.example.autoscript.service.ActionExecutor;
 import com.example.autoscript.service.CaptureService;
 import com.example.autoscript.service.ConfigService;
 import com.example.autoscript.service.GlobalHotkeyService;
 import com.example.autoscript.service.ImageMatcher;
+import com.example.autoscript.service.JavaImageTemplateMatcher;
 import com.example.autoscript.service.MonitoringService;
 import com.example.autoscript.service.OpenCvTemplateMatcher;
 import com.example.autoscript.service.RobotCaptureService;
+import com.example.autoscript.service.VcRedistributableInstaller;
 import com.example.autoscript.service.WindowClickExecutor;
 import com.example.autoscript.service.WindowService;
 import com.example.autoscript.service.WindowsWindowService;
@@ -24,6 +29,7 @@ import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
 import javax.swing.DropMode;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -68,9 +74,13 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -78,6 +88,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainFrame extends JFrame {
 
@@ -118,6 +129,8 @@ public class MainFrame extends JFrame {
     private final JTextField stopHotkeyField = new JTextField("F10");
     private final JSpinner clickXSpinner = new JSpinner(new SpinnerNumberModel(100, -10000, 10000, 1));
     private final JSpinner clickYSpinner = new JSpinner(new SpinnerNumberModel(100, -10000, 10000, 1));
+    private final JComboBox<ConditionTriggerActionType> triggerActionTypeComboBox =
+            new JComboBox<>(ConditionTriggerActionType.values());
     private final JTextArea templatePathsArea = new JTextArea(4, 24);
     private final JTextField conditionExpressionField = new JTextField();
 
@@ -144,6 +157,8 @@ public class MainFrame extends JFrame {
     private int lastLogDividerLocation = -1;
     private boolean suppressBasicConfigAutoSave = false;
     private ConditionConfig copiedConditionClipboard;
+    private String imageMatcherStartupWarning;
+    private final AtomicBoolean vcRuntimeInstallInProgress = new AtomicBoolean(false);
     private final Path projectRootPath = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     private final Path scriptDirPath = projectRootPath.resolve("script").toAbsolutePath().normalize();
     private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
@@ -152,10 +167,10 @@ public class MainFrame extends JFrame {
         super("Java 桌面脚本化自动化工具");
         this.windowService = new WindowsWindowService();
         this.configService = new ConfigService();
-        this.imageMatcher = new OpenCvTemplateMatcher();
+        this.imageMatcher = createImageMatcher();
         this.actionExecutor = new WindowClickExecutor(windowService);
         this.captureService = new RobotCaptureService(windowService, this::log);
-        this.monitoringService = new MonitoringService(windowService, this.captureService, this::log);
+        this.monitoringService = new MonitoringService(windowService, this.captureService, this::log, this::showMonitoringStoppedReminder);
         this.hotkeyService = new GlobalHotkeyService();
         this.runningAsAdmin = detectRunningAsAdmin();
         this.currentConfig = configService.load();
@@ -170,6 +185,7 @@ public class MainFrame extends JFrame {
 
         initLookAndFeel();
         initComponents();
+        showImageMatcherStartupWarningIfNeeded();
         installRegionPreviewListeners();
         installBasicConfigAutoSaveListeners();
         installConditionEditorAutoApplyListeners();
@@ -182,6 +198,237 @@ public class MainFrame extends JFrame {
         refreshWindows();
         tryRestoreBinding();
         log("当前进程权限: " + (runningAsAdmin ? "管理员" : "普通用户"));
+    }
+
+    private ImageMatcher createImageMatcher() {
+        try {
+            return new OpenCvTemplateMatcher();
+        } catch (Throwable firstFailure) {
+            String firstDetail = resolveRootCauseMessage(firstFailure);
+            String firstSummary = summarizeDiagnosticDetail(firstDetail);
+            boolean cacheCleared = clearJavaCppOpenCvCache();
+            if (cacheCleared) {
+                log("OpenCV 首次加载失败，已自动清理 .javacpp OpenCV 缓存并重试一次。"
+                        + (firstDetail.isBlank() ? "" : " 首次失败详情: " + firstDetail));
+                try {
+                    OpenCvTemplateMatcher matcher = new OpenCvTemplateMatcher();
+                    log("OpenCV 缓存清理后重试成功，已恢复使用 OpenCV 模板匹配");
+                    return matcher;
+                } catch (Throwable retryFailure) {
+                    String retryDetail = resolveRootCauseMessage(retryFailure);
+                    String retrySummary = summarizeDiagnosticDetail(retryDetail);
+                    imageMatcherStartupWarning = "OpenCV 本地库加载失败，已自动清理 .javacpp 缓存并重试一次，但仍未恢复。"
+                            + " 已切换为纯 Java 模板匹配。"
+                            + (retrySummary.isBlank() ? "" : "\n重试后摘要: " + retrySummary)
+                            + "\n完整错误详情已写入运行日志。";
+                    log(imageMatcherStartupWarning.replace(System.lineSeparator(), " "));
+                    if (!retryDetail.isBlank()) {
+                        log("OpenCV 重试后完整错误详情: " + retryDetail);
+                    }
+                    return new JavaImageTemplateMatcher();
+                }
+            }
+            imageMatcherStartupWarning = "OpenCV 本地库加载失败，已自动切换为纯 Java 模板匹配。"
+                    + " 当前仍可运行，但匹配速度可能变慢。"
+                    + (firstSummary.isBlank() ? "" : "\n错误摘要: " + firstSummary)
+                    + "\n完整错误详情已写入运行日志。";
+            log(imageMatcherStartupWarning.replace(System.lineSeparator(), " "));
+            if (!firstDetail.isBlank()) {
+                log("OpenCV 完整错误详情: " + firstDetail);
+            }
+            return new JavaImageTemplateMatcher();
+        }
+    }
+
+    private boolean clearJavaCppOpenCvCache() {
+        Path cacheRoot = resolveJavaCppCacheRoot();
+        if (cacheRoot == null || Files.notExists(cacheRoot) || !Files.isDirectory(cacheRoot)) {
+            return false;
+        }
+        List<Path> targets = new ArrayList<>();
+        try (var children = Files.list(cacheRoot)) {
+            children.filter(Files::isDirectory)
+                    .filter(path -> {
+                        Path fileName = path.getFileName();
+                        return fileName != null && fileName.toString().toLowerCase().startsWith("opencv-");
+                    })
+                    .forEach(targets::add);
+        } catch (Exception e) {
+            log("扫描 .javacpp 缓存失败，无法自动清理 OpenCV 缓存: " + e.getMessage());
+            return false;
+        }
+        if (targets.isEmpty()) {
+            return false;
+        }
+        boolean deletedAny = false;
+        for (Path target : targets) {
+            try {
+                deleteDirectoryRecursively(target);
+                deletedAny = true;
+                log("已清理 OpenCV 缓存目录: " + target);
+            } catch (Exception e) {
+                log("清理 OpenCV 缓存目录失败: " + target + "，详情: " + e.getMessage());
+            }
+        }
+        return deletedAny;
+    }
+
+    private Path resolveJavaCppCacheRoot() {
+        String userHome = System.getProperty("user.home", "").trim();
+        if (userHome.isBlank()) {
+            return null;
+        }
+        return Paths.get(userHome, ".javacpp", "cache").toAbsolutePath().normalize();
+    }
+
+    private void deleteDirectoryRecursively(Path directory) throws IOException {
+        if (directory == null || Files.notExists(directory)) {
+            return;
+        }
+        Files.walkFileTree(directory, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.deleteIfExists(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
+                if (exc != null) {
+                    throw exc;
+                }
+                Files.deleteIfExists(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private void showImageMatcherStartupWarningIfNeeded() {
+        if (imageMatcherStartupWarning == null || imageMatcherStartupWarning.isBlank()) {
+            return;
+        }
+        String message = imageMatcherStartupWarning;
+        SwingUtilities.invokeLater(() -> {
+            java.awt.Component parent = isDisplayable() || isShowing() ? this : null;
+            String prompt = message
+                    + "\n\n检测到 OpenCV 本地依赖缺失。通常是 Microsoft Visual C++ x64 运行库未安装。"
+                    + "\n是否现在自动下载安装并安装运行库？"
+                    + "\n安装完成后请重新启动程序以启用 OpenCV。";
+            Object[] options = {"立即自动安装", "继续纯 Java 模式"};
+            int choice = showScrollableOptionDialog(parent, prompt, "OpenCV 依赖缺失",
+                    JOptionPane.WARNING_MESSAGE, options, options[0]);
+            if (choice == JOptionPane.YES_OPTION) {
+                installVcRuntimeAsync();
+            }
+        });
+    }
+
+    private void installVcRuntimeAsync() {
+        if (!vcRuntimeInstallInProgress.compareAndSet(false, true)) {
+            JOptionPane.showMessageDialog(this, "运行库安装任务已在进行中，请稍候。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        Thread worker = new Thread(() -> {
+            try {
+                log("开始自动安装 Microsoft Visual C++ x64 运行库");
+                VcRedistributableInstaller installer = new VcRedistributableInstaller(projectRootPath, runningAsAdmin, this::log);
+                VcRedistributableInstaller.InstallResult result = installer.install();
+                log(result.message());
+                SwingUtilities.invokeLater(() -> showVcRuntimeInstallResult(result));
+            } finally {
+                vcRuntimeInstallInProgress.set(false);
+            }
+        }, "vc-redist-installer");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void showVcRuntimeInstallResult(VcRedistributableInstaller.InstallResult result) {
+        if (result == null) {
+            showScrollableMessageDialog(this,
+                    "运行库安装结果未知，当前继续使用纯 Java 匹配。",
+                    "运行库安装",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        int messageType = switch (result.status()) {
+            case INSTALLED, RESTART_REQUIRED -> JOptionPane.INFORMATION_MESSAGE;
+            case CANCELED -> JOptionPane.WARNING_MESSAGE;
+            case FAILED -> JOptionPane.ERROR_MESSAGE;
+        };
+        String suffix = result.status() == VcRedistributableInstaller.InstallStatus.FAILED
+                ? "\n如需手动安装，请打开: " + VcRedistributableInstaller.OFFICIAL_DOWNLOAD_URI
+                : "";
+        showScrollableMessageDialog(this,
+                result.message() + suffix,
+                "运行库安装",
+                messageType);
+    }
+
+    private String resolveRootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        return message == null ? "" : message.trim();
+    }
+
+    private String summarizeDiagnosticDetail(String detail) {
+        if (detail == null || detail.isBlank()) {
+            return "";
+        }
+        String compact = detail.replaceAll("\\s+", " ").trim();
+        int libraryPathIndex = compact.toLowerCase().indexOf("java.library.path:");
+        if (libraryPathIndex >= 0) {
+            compact = compact.substring(0, libraryPathIndex).trim();
+        }
+        int maxLength = 220;
+        if (compact.length() > maxLength) {
+            return compact.substring(0, maxLength) + "...";
+        }
+        return compact;
+    }
+
+    private int showScrollableOptionDialog(java.awt.Component parent,
+                                           String message,
+                                           String title,
+                                           int messageType,
+                                           Object[] options,
+                                           Object initialValue) {
+        return JOptionPane.showOptionDialog(
+                parent,
+                createScrollableMessageComponent(message),
+                title,
+                JOptionPane.YES_NO_OPTION,
+                messageType,
+                null,
+                options,
+                initialValue
+        );
+    }
+
+    private void showScrollableMessageDialog(java.awt.Component parent,
+                                             String message,
+                                             String title,
+                                             int messageType) {
+        JOptionPane.showMessageDialog(parent, createScrollableMessageComponent(message), title, messageType);
+    }
+
+    private JScrollPane createScrollableMessageComponent(String message) {
+        JTextArea textArea = new JTextArea(message == null ? "" : message);
+        textArea.setEditable(false);
+        textArea.setLineWrap(true);
+        textArea.setWrapStyleWord(true);
+        textArea.setOpaque(false);
+        textArea.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+        textArea.setCaretPosition(0);
+
+        JScrollPane scrollPane = new JScrollPane(textArea);
+        scrollPane.setPreferredSize(new Dimension(560, 260));
+        scrollPane.setBorder(BorderFactory.createEmptyBorder());
+        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        return scrollPane;
     }
 
     private void initLookAndFeel() {
@@ -256,6 +503,7 @@ public class MainFrame extends JFrame {
         thresholdSpinner.addChangeListener(spinnerListener);
         clickXSpinner.addChangeListener(spinnerListener);
         clickYSpinner.addChangeListener(spinnerListener);
+        triggerActionTypeComboBox.addActionListener(e -> autoApplyEditorToEditingCondition());
 
         DocumentListener textListener = new DocumentListener() {
             @Override
@@ -492,6 +740,7 @@ public class MainFrame extends JFrame {
         selectClickByMaskButton.addActionListener(e -> selectClickPointByMask());
         clickPickerPanel.add(selectClickByMaskButton);
         addFormRow(form, gbc, row++, "点击框选", clickPickerPanel);
+        addFormRow(form, gbc, row++, "触发后动作", triggerActionTypeComboBox);
 
         JPanel templatePanel = new JPanel(new BorderLayout(6, 6));
         templatePathsArea.setLineWrap(false);
@@ -1191,6 +1440,7 @@ public class MainFrame extends JFrame {
             thresholdSpinner.setValue((int) Math.round(source.getThreshold() * 100.0D));
             clickXSpinner.setValue(source.getClickX());
             clickYSpinner.setValue(source.getClickY());
+            triggerActionTypeComboBox.setSelectedItem(source.getPrimaryTriggerActionType());
             templatePathsArea.setText(String.join(System.lineSeparator(), normalizeTemplatePaths(source.getTemplatePaths())));
             String expression = source.getConditionExpression();
             if ((expression == null || expression.isBlank()) && !source.getTemplatePaths().isEmpty()) {
@@ -1210,6 +1460,7 @@ public class MainFrame extends JFrame {
         condition.setThreshold(((Number) thresholdSpinner.getValue()).doubleValue() / 100.0D);
         condition.setClickX(((Number) clickXSpinner.getValue()).intValue());
         condition.setClickY(((Number) clickYSpinner.getValue()).intValue());
+        condition.setPrimaryTriggerActionType(resolveSelectedTriggerActionType());
         condition.setTemplatePaths(parseTemplatePaths(templatePathsArea.getText()));
         condition.setConditionExpression(conditionExpressionField.getText().trim());
         MonitorRegion region = new MonitorRegion();
@@ -1607,11 +1858,11 @@ public class MainFrame extends JFrame {
                 }
 
                 MonitorRule rule = new MonitorRule("image-match-click-" + (i + 1))
-                        .setConditionExpression(runtimeConfig.getConditionExpression())
-                        .addAction(new ClickActionStep(actionExecutor, windowService));
+                        .setConditionExpression(runtimeConfig.getConditionExpression());
                 for (LoadedTemplate template : loadedTemplates) {
                     rule.addCondition(new ImageTemplateCondition(template.conditionName(), imageMatcher, template.image()));
                 }
+                appendConfiguredTriggerActions(rule, rawCondition);
 
                 String conditionKey = "COND_" + i;
                 pollingConditions.add(new MonitoringService.PollingCondition(
@@ -1621,8 +1872,13 @@ public class MainFrame extends JFrame {
                         loadedTemplates.get(0).image(),
                         rule
                 ));
-                normalizedConditions.add(buildConditionConfigFromRuntime(runtimeConfig, conditionName));
-                logConditionMapping(conditionName, loadedTemplates, runtimeConfig.getConditionExpression());
+                normalizedConditions.add(buildConditionConfigFromRuntime(runtimeConfig,
+                        conditionName,
+                        rawCondition.getTriggerActions()));
+                logConditionMapping(conditionName,
+                        loadedTemplates,
+                        runtimeConfig.getConditionExpression(),
+                        rawCondition.getTriggerActionsSummary());
             }
 
             if (pollingConditions.isEmpty()) {
@@ -1662,8 +1918,12 @@ public class MainFrame extends JFrame {
         }
     }
 
-    private void logConditionMapping(String conditionName, List<LoadedTemplate> loadedTemplates, String expression) {
-        log("条件[" + conditionName + "] 表达式: " + expression);
+    private void logConditionMapping(String conditionName,
+                                     List<LoadedTemplate> loadedTemplates,
+                                     String expression,
+                                     String triggerActionSummary) {
+        log("条件[" + conditionName + "] 表达式: " + expression
+                + "；触发动作=" + triggerActionSummary);
         for (LoadedTemplate template : loadedTemplates) {
             log("  " + template.conditionName() + " => " + template.path());
         }
@@ -1901,7 +2161,9 @@ public class MainFrame extends JFrame {
                     normalizeRegionCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
                     normalizeClickCoordinateModeIfNeeded(runtimeConfig, clientRect, false);
                     ensureReferenceSizeIfMissing(runtimeConfig, clientRect, true);
-                    normalizedConditions.add(buildConditionConfigFromRuntime(runtimeConfig, resolveConditionName(condition, i)));
+                    normalizedConditions.add(buildConditionConfigFromRuntime(runtimeConfig,
+                            resolveConditionName(condition, i),
+                            condition.getTriggerActions()));
                 }
                 currentConfig.setConditions(normalizedConditions);
                 conditionTableModel.setConditions(normalizedConditions);
@@ -2004,6 +2266,14 @@ public class MainFrame extends JFrame {
         return builder.toString();
     }
 
+    private ConditionTriggerActionType resolveSelectedTriggerActionType() {
+        Object selectedItem = triggerActionTypeComboBox.getSelectedItem();
+        if (selectedItem instanceof ConditionTriggerActionType actionType) {
+            return actionType;
+        }
+        return ConditionTriggerActionType.CLICK_REGION;
+    }
+
     private void loadConfigToForm(AppConfig config) {
         if (config == null) {
             return;
@@ -2075,16 +2345,47 @@ public class MainFrame extends JFrame {
         return merged;
     }
 
-    private ConditionConfig buildConditionConfigFromRuntime(AppConfig config, String conditionName) {
+    private ConditionConfig buildConditionConfigFromRuntime(AppConfig config,
+                                                            String conditionName,
+                                                            List<ConditionTriggerActionConfig> triggerActions) {
         ConditionConfig condition = new ConditionConfig();
         condition.setName(conditionName);
         condition.setThreshold(config.getThreshold());
         condition.setClickX(config.getClickX());
         condition.setClickY(config.getClickY());
+        condition.setTriggerActions(triggerActions);
         condition.setTemplatePaths(config.getTemplatePaths());
         condition.setConditionExpression(config.getConditionExpression());
         condition.setMonitorRegion(cloneRegion(config.getMonitorRegion()));
         return condition;
+    }
+
+    private void appendConfiguredTriggerActions(MonitorRule rule, ConditionConfig condition) {
+        if (rule == null) {
+            return;
+        }
+        ConditionConfig source = condition == null ? new ConditionConfig() : condition;
+        for (ConditionTriggerActionConfig actionConfig : source.getTriggerActions()) {
+            if (actionConfig == null) {
+                continue;
+            }
+            switch (actionConfig.getType()) {
+                case CLICK_REGION -> rule.addAction(new ClickActionStep(actionExecutor, windowService));
+                case STOP_MONITORING -> rule.addAction(new StopMonitoringActionStep());
+            }
+        }
+    }
+
+    private void showMonitoringStoppedReminder(String message) {
+        if (message == null || message.isBlank()) {
+            return;
+        }
+        SwingUtilities.invokeLater(() -> {
+            if (!isDisplayable()) {
+                return;
+            }
+            showScrollableMessageDialog(this, message, "监控已停止", JOptionPane.INFORMATION_MESSAGE);
+        });
     }
 
     private MonitorRegion cloneRegion(MonitorRegion source) {
@@ -2211,7 +2512,7 @@ public class MainFrame extends JFrame {
     private void showError(String title, Exception e) {
         e.printStackTrace();
         log(title + ": " + e.getMessage());
-        JOptionPane.showMessageDialog(this, title + "\n" + e.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
+        showScrollableMessageDialog(this, title + "\n" + e.getMessage(), "错误", JOptionPane.ERROR_MESSAGE);
     }
 
     private void shutdown() {

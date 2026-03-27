@@ -10,7 +10,7 @@ import java.util.List;
 public class ConditionTableModel extends AbstractTableModel {
 
     private static final String[] COLUMNS = {
-            "序号", "名称", "相似度(%)", "区域", "点击", "模板数", "表达式"
+            "序号", "名称", "相似度(%)", "区域", "点击", "模板数", "触发动作", "表达式"
     };
 
     private final List<ConditionConfig> conditions = new ArrayList<>();
@@ -127,7 +127,8 @@ public class ConditionTableModel extends AbstractTableModel {
                     region.getX(), region.getY(), region.getWidth(), region.getHeight());
             case 4 -> String.format("x=%d,y=%d", condition.getClickX(), condition.getClickY());
             case 5 -> condition.getTemplatePaths().size();
-            case 6 -> condition.getConditionExpression();
+            case 6 -> condition.getTriggerActionsSummary();
+            case 7 -> condition.getConditionExpression();
             default -> "";
         };
     }

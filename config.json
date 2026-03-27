@@ -1,1 +1,145 @@
-{}
+{
+  "intervalMs" : 300,
+  "threshold" : 0.99,
+  "monitorRegion" : {
+    "anchor" : "TOP_LEFT",
+    "offsetX" : 2404,
+    "offsetY" : 39,
+    "width" : 55,
+    "height" : 72,
+    "referenceWidth" : 2560,
+    "referenceHeight" : 1440,
+    "y" : 39,
+    "x" : 2404
+  },
+  "clickX" : 100,
+  "clickY" : 1392,
+  "repeatTrigger" : true,
+  "backgroundClickMode" : false,
+  "moveWindowToBackAfterTrigger" : true,
+  "captureMode" : "WINDOW_HANDLE_FALLBACK_SCREEN",
+  "startHotkey" : "F9",
+  "stopHotkey" : "F10",
+  "templatePath" : "./captures/好感29.png",
+  "templatePaths" : [ "./captures/好感29.png" ],
+  "conditionExpression" : "C1",
+  "conditions" : [ {
+    "name" : "停止:灵感30",
+    "monitorRegion" : {
+      "anchor" : "TOP_LEFT",
+      "offsetX" : 2404,
+      "offsetY" : 39,
+      "width" : 55,
+      "height" : 72,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
+      "y" : 39,
+      "x" : 2404
+    },
+    "threshold" : 0.99,
+    "clickX" : 100,
+    "clickY" : 1392,
+    "templatePaths" : [ "./captures/好感29.png" ],
+    "conditionExpression" : "C1",
+    "triggerActions" : [ {
+      "type" : "CLICK_REGION"
+    } ],
+    "primaryTriggerActionType" : "CLICK_REGION",
+    "triggerActionsSummary" : "点击区域"
+  }, {
+    "name" : "停止:灵感29",
+    "monitorRegion" : {
+      "anchor" : "TOP_LEFT",
+      "offsetX" : 2404,
+      "offsetY" : 39,
+      "width" : 55,
+      "height" : 72,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
+      "y" : 39,
+      "x" : 2404
+    },
+    "threshold" : 0.99,
+    "clickX" : 100,
+    "clickY" : 1392,
+    "templatePaths" : [ "./captures/好感29.png" ],
+    "conditionExpression" : "C1",
+    "triggerActions" : [ {
+      "type" : "CLICK_REGION"
+    } ],
+    "primaryTriggerActionType" : "CLICK_REGION",
+    "triggerActionsSummary" : "点击区域"
+  }, {
+    "name" : "高潮",
+    "monitorRegion" : {
+      "anchor" : "TOP_LEFT",
+      "offsetX" : 540,
+      "offsetY" : 1040,
+      "width" : 85,
+      "height" : 85,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
+      "y" : 1040,
+      "x" : 540
+    },
+    "threshold" : 0.95,
+    "clickX" : 570,
+    "clickY" : 1090,
+    "templatePaths" : [ "./captures/一起高潮.png" ],
+    "conditionExpression" : "C1",
+    "triggerActions" : [ {
+      "type" : "CLICK_REGION"
+    } ],
+    "primaryTriggerActionType" : "CLICK_REGION",
+    "triggerActionsSummary" : "点击区域"
+  }, {
+    "name" : "再来一发",
+    "monitorRegion" : {
+      "anchor" : "TOP_LEFT",
+      "offsetX" : 535,
+      "offsetY" : 1195,
+      "width" : 50,
+      "height" : 50,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
+      "y" : 1195,
+      "x" : 535
+    },
+    "threshold" : 0.95,
+    "clickX" : 570,
+    "clickY" : 1190,
+    "templatePaths" : [ "./captures/再来一发.png" ],
+    "conditionExpression" : "C1",
+    "triggerActions" : [ {
+      "type" : "CLICK_REGION"
+    } ],
+    "primaryTriggerActionType" : "CLICK_REGION",
+    "triggerActionsSummary" : "点击区域"
+  }, {
+    "name" : "开始",
+    "monitorRegion" : {
+      "anchor" : "TOP_LEFT",
+      "offsetX" : 535,
+      "offsetY" : 1195,
+      "width" : 50,
+      "height" : 50,
+      "referenceWidth" : 2560,
+      "referenceHeight" : 1440,
+      "y" : 1195,
+      "x" : 535
+    },
+    "threshold" : 0.92,
+    "clickX" : 570,
+    "clickY" : 1190,
+    "templatePaths" : [ "./captures/开始.png" ],
+    "conditionExpression" : "C1",
+    "triggerActions" : [ {
+      "type" : "CLICK_REGION"
+    } ],
+    "primaryTriggerActionType" : "CLICK_REGION",
+    "triggerActionsSummary" : "点击区域"
+  } ],
+  "lastWindowPid" : -1,
+  "lastWindowTitle" : "",
+  "lastWindowClassName" : ""
+}

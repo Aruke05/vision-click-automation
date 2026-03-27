@@ -24,6 +24,7 @@ public class MonitoringService {
     private final WindowService windowService;
     private final CaptureService captureService;
     private final Consumer<String> logger;
+    private final Consumer<String> stopNotifier;
 
     private ScheduledExecutorService executorService;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -33,9 +34,17 @@ public class MonitoringService {
     public MonitoringService(WindowService windowService,
                              CaptureService captureService,
                              Consumer<String> logger) {
+        this(windowService, captureService, logger, null);
+    }
+
+    public MonitoringService(WindowService windowService,
+                             CaptureService captureService,
+                             Consumer<String> logger,
+                             Consumer<String> stopNotifier) {
         this.windowService = windowService;
         this.captureService = captureService;
         this.logger = logger;
+        this.stopNotifier = stopNotifier;
     }
 
     public synchronized void start(WindowInfo window,
@@ -122,6 +131,7 @@ public class MonitoringService {
                 MonitorContext context = new MonitorContext(
                         window,
                         conditionConfig,
+                        pollingCondition.getName(),
                         captured,
                         pollingCondition.getTemplateImage(),
                         logger
@@ -144,6 +154,12 @@ public class MonitoringService {
                         log("轮询#" + cycleNo + " 持续命中，已抑制重复触发" + prefix + "；" + detail);
                     }
                     lastMatchedConditionKey = matchedConditionKey;
+                    if (context.isStopMonitoringRequested()) {
+                        log("轮询#" + cycleNo + " 动作链请求停止监控" + prefix);
+                        stop();
+                        notifyStopped(context.getStopMonitoringMessage());
+                        return;
+                    }
                     log("轮询#" + cycleNo + " 检测结束，命中" + prefix + "，本轮已结束");
                     return;
                 }
@@ -197,6 +213,12 @@ public class MonitoringService {
     private void log(String msg) {
         if (logger != null) {
             logger.accept(msg);
+        }
+    }
+
+    private void notifyStopped(String message) {
+        if (stopNotifier != null && message != null && !message.isBlank()) {
+            stopNotifier.accept(message);
         }
     }
 
