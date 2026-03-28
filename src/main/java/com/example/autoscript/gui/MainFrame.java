@@ -144,6 +144,9 @@ public class MainFrame extends JFrame {
             new JComboBox<>(ConditionTriggerActionType.values());
     private final JTextArea templatePathsArea = new JTextArea(4, 24);
     private final JTextField conditionExpressionField = new JTextField();
+    private FormRow clickXRow;
+    private FormRow clickYRow;
+    private FormRow clickPickerRow;
 
     private final RegionOverlayWindow regionOverlay;
     private final javax.swing.Timer regionOverlayTimer;
@@ -794,7 +797,12 @@ public class MainFrame extends JFrame {
         thresholdSpinner.addChangeListener(spinnerListener);
         clickXSpinner.addChangeListener(spinnerListener);
         clickYSpinner.addChangeListener(spinnerListener);
-        triggerActionTypeComboBox.addActionListener(e -> autoApplyEditorToEditingCondition());
+        triggerActionTypeComboBox.addActionListener(e -> {
+            updateClickActionEditorVisibility();
+            clickOverlayPositionLogged = false;
+            autoApplyEditorToEditingCondition();
+            refreshClickOverlayQuietly();
+        });
 
         DocumentListener textListener = new DocumentListener() {
             @Override
@@ -1005,14 +1013,14 @@ public class MainFrame extends JFrame {
         regionPickerPanel.add(selectRegionByMaskButton);
         addFormRow(form, gbc, row++, "区域框选", regionPickerPanel);
         addFormRow(form, gbc, row++, "相似度阈值(%)", thresholdSpinner);
-        addFormRow(form, gbc, row++, "点击坐标 X(client)", clickXSpinner);
-        addFormRow(form, gbc, row++, "点击坐标 Y(client)", clickYSpinner);
+        addFormRow(form, gbc, row++, "触发后动作", triggerActionTypeComboBox);
+        clickXRow = addFormRow(form, gbc, row++, "点击坐标 X(client)", clickXSpinner);
+        clickYRow = addFormRow(form, gbc, row++, "点击坐标 Y(client)", clickYSpinner);
         JPanel clickPickerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         JButton selectClickByMaskButton = new JButton("蒙版框选点击中心");
         selectClickByMaskButton.addActionListener(e -> selectClickPointByMask());
         clickPickerPanel.add(selectClickByMaskButton);
-        addFormRow(form, gbc, row++, "点击框选", clickPickerPanel);
-        addFormRow(form, gbc, row++, "触发后动作", triggerActionTypeComboBox);
+        clickPickerRow = addFormRow(form, gbc, row++, "点击框选", clickPickerPanel);
 
         JPanel templatePanel = new JPanel(new BorderLayout(6, 6));
         templatePathsArea.setLineWrap(false);
@@ -1036,6 +1044,7 @@ public class MainFrame extends JFrame {
 
         addFormRow(form, gbc, row++, "条件表达式", conditionExpressionField);
         addFormRow(form, gbc, row++, "表达式示例", new JLabel("C1 AND (NOT C2)；也支持 && || !"));
+        updateClickActionEditorVisibility();
         return form;
     }
 
@@ -1072,15 +1081,50 @@ public class MainFrame extends JFrame {
         return gbc;
     }
 
-    private void addFormRow(JPanel panel, GridBagConstraints gbc, int row, String labelText, java.awt.Component comp) {
+    private FormRow addFormRow(JPanel panel, GridBagConstraints gbc, int row, String labelText, java.awt.Component comp) {
         gbc.gridx = 0;
         gbc.gridy = row;
         gbc.weightx = 0;
-        panel.add(new JLabel(labelText), gbc);
+        JLabel label = new JLabel(labelText);
+        panel.add(label, gbc);
 
         gbc.gridx = 1;
         gbc.weightx = 1;
         panel.add(comp, gbc);
+        return new FormRow(label, comp);
+    }
+
+    private void updateClickActionEditorVisibility() {
+        boolean visible = resolveSelectedTriggerActionType() == ConditionTriggerActionType.CLICK_REGION;
+        setFormRowVisible(clickXRow, visible);
+        setFormRowVisible(clickYRow, visible);
+        setFormRowVisible(clickPickerRow, visible);
+        if (clickXRow != null && clickXRow.label.getParent() != null) {
+            clickXRow.label.getParent().revalidate();
+            clickXRow.label.getParent().repaint();
+        }
+    }
+
+    private void setFormRowVisible(FormRow row, boolean visible) {
+        if (row == null) {
+            return;
+        }
+        row.label.setVisible(visible);
+        row.field.setVisible(visible);
+    }
+
+    private boolean usesClickTriggerAction(ConditionConfig condition) {
+        return condition != null && condition.getPrimaryTriggerActionType() == ConditionTriggerActionType.CLICK_REGION;
+    }
+
+    private static final class FormRow {
+        private final JLabel label;
+        private final Component field;
+
+        private FormRow(JLabel label, Component field) {
+            this.label = label;
+            this.field = field;
+        }
     }
 
     private void refreshWindows() {
@@ -1893,7 +1937,9 @@ public class MainFrame extends JFrame {
         } finally {
             syncingConditionEditor = false;
         }
+        updateClickActionEditorVisibility();
         refreshRegionOverlayQuietly();
+        clickOverlayPositionLogged = false;
         refreshClickOverlayQuietly();
     }
 
@@ -2197,6 +2243,10 @@ public class MainFrame extends JFrame {
 
         ConditionConfig selectedCondition = resolveSelectedConditionForPreview();
         if (selectedCondition == null) {
+            clickOverlay.hide();
+            return;
+        }
+        if (!usesClickTriggerAction(selectedCondition)) {
             clickOverlay.hide();
             return;
         }
