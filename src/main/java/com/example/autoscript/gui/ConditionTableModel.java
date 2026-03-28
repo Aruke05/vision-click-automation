@@ -9,8 +9,10 @@ import java.util.List;
 
 public class ConditionTableModel extends AbstractTableModel {
 
+    public static final int PREVIEW_COLUMN_INDEX = 8;
+
     private static final String[] COLUMNS = {
-            "序号", "名称", "相似度(%)", "区域", "点击", "模板数", "触发动作", "表达式"
+            "序号", "名称", "相似度(%)", "区域", "点击", "模板数", "触发动作", "表达式", "截图区域"
     };
 
     private final List<ConditionConfig> conditions = new ArrayList<>();
@@ -114,6 +116,11 @@ public class ConditionTableModel extends AbstractTableModel {
     }
 
     @Override
+    public boolean isCellEditable(int rowIndex, int columnIndex) {
+        return columnIndex == PREVIEW_COLUMN_INDEX;
+    }
+
+    @Override
     public Object getValueAt(int rowIndex, int columnIndex) {
         ConditionConfig condition = conditions.get(rowIndex);
         MonitorRegion region = condition.getMonitorRegion();
@@ -129,6 +136,7 @@ public class ConditionTableModel extends AbstractTableModel {
             case 5 -> condition.getTemplatePaths().size();
             case 6 -> condition.getTriggerActionsSummary();
             case 7 -> condition.getConditionExpression();
+            case 8 -> "显示区域";
             default -> "";
         };
     }

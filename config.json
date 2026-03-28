@@ -9,19 +9,19 @@
     "height" : 72,
     "referenceWidth" : 2560,
     "referenceHeight" : 1440,
-    "y" : 39,
-    "x" : 2404
+    "x" : 2404,
+    "y" : 39
   },
   "clickX" : 100,
   "clickY" : 1392,
   "repeatTrigger" : true,
   "backgroundClickMode" : false,
   "moveWindowToBackAfterTrigger" : true,
-  "captureMode" : "WINDOW_HANDLE_FALLBACK_SCREEN",
+  "captureMode" : "WINDOW_HANDLE",
   "startHotkey" : "F9",
   "stopHotkey" : "F10",
-  "templatePath" : "./captures/好感29.png",
-  "templatePaths" : [ "./captures/好感29.png" ],
+  "templatePath" : "./captures/template-20260328-034705-590.png",
+  "templatePaths" : [ "./captures/template-20260328-034705-590.png" ],
   "conditionExpression" : "C1",
   "conditions" : [ {
     "name" : "停止:灵感30",
@@ -33,36 +33,36 @@
       "height" : 72,
       "referenceWidth" : 2560,
       "referenceHeight" : 1440,
-      "y" : 39,
-      "x" : 2404
+      "x" : 2404,
+      "y" : 39
     },
     "threshold" : 0.99,
     "clickX" : 100,
     "clickY" : 1392,
-    "templatePaths" : [ "./captures/好感29.png" ],
+    "templatePaths" : [ "./captures/template-20260328-034705-590.png" ],
     "conditionExpression" : "C1",
     "triggerActions" : [ {
-      "type" : "CLICK_REGION"
+      "type" : "STOP_MONITORING"
     } ],
-    "primaryTriggerActionType" : "CLICK_REGION",
-    "triggerActionsSummary" : "点击区域"
+    "primaryTriggerActionType" : "STOP_MONITORING",
+    "triggerActionsSummary" : "停止监控"
   }, {
     "name" : "停止:灵感29",
     "monitorRegion" : {
       "anchor" : "TOP_LEFT",
-      "offsetX" : 2404,
-      "offsetY" : 39,
-      "width" : 55,
-      "height" : 72,
-      "referenceWidth" : 2560,
-      "referenceHeight" : 1440,
-      "y" : 39,
-      "x" : 2404
+      "offsetX" : 764,
+      "offsetY" : 306,
+      "width" : 1076,
+      "height" : 671,
+      "referenceWidth" : 3194,
+      "referenceHeight" : 1742,
+      "x" : 764,
+      "y" : 306
     },
     "threshold" : 0.99,
-    "clickX" : 100,
-    "clickY" : 1392,
-    "templatePaths" : [ "./captures/好感29.png" ],
+    "clickX" : 618,
+    "clickY" : 869,
+    "templatePaths" : [ "./captures/template-20260328-130228-347.png" ],
     "conditionExpression" : "C1",
     "triggerActions" : [ {
       "type" : "CLICK_REGION"
@@ -79,8 +79,8 @@
       "height" : 85,
       "referenceWidth" : 2560,
       "referenceHeight" : 1440,
-      "y" : 1040,
-      "x" : 540
+      "x" : 540,
+      "y" : 1040
     },
     "threshold" : 0.95,
     "clickX" : 570,
@@ -102,8 +102,8 @@
       "height" : 50,
       "referenceWidth" : 2560,
       "referenceHeight" : 1440,
-      "y" : 1195,
-      "x" : 535
+      "x" : 535,
+      "y" : 1195
     },
     "threshold" : 0.95,
     "clickX" : 570,
@@ -125,8 +125,8 @@
       "height" : 50,
       "referenceWidth" : 2560,
       "referenceHeight" : 1440,
-      "y" : 1195,
-      "x" : 535
+      "x" : 535,
+      "y" : 1195
     },
     "threshold" : 0.92,
     "clickX" : 570,
@@ -139,7 +139,7 @@
     "primaryTriggerActionType" : "CLICK_REGION",
     "triggerActionsSummary" : "点击区域"
   } ],
-  "lastWindowPid" : -1,
-  "lastWindowTitle" : "",
-  "lastWindowClassName" : ""
+  "lastWindowPid" : 6576,
+  "lastWindowTitle" : "Steam",
+  "lastWindowClassName" : "SDL_app"
 }

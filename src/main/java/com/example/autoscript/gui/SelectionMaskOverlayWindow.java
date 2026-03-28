@@ -9,6 +9,7 @@ import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.Dialog;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
@@ -59,6 +60,9 @@ public class SelectionMaskOverlayWindow {
         this.window.setFocusableWindowState(true);
         this.window.setAutoRequestFocus(true);
         this.window.setType(Window.Type.UTILITY);
+        // 排除应用级模态阻塞，否则从条件编辑弹窗里打开蒙版时，
+        // Windows 下会出现“看得到蒙版但点击只有报错音”的现象。
+        this.window.setModalExclusionType(Dialog.ModalExclusionType.APPLICATION_EXCLUDE);
         this.window.setContentPane(overlayPanel);
         this.overlayPanel.setCursor(Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR));
         installMouseHandlers();

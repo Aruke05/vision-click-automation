@@ -4,6 +4,7 @@ import com.example.autoscript.model.MatchResult;
 import com.example.autoscript.util.ImageUtils;
 import org.bytedeco.javacpp.DoublePointer;
 import org.bytedeco.javacpp.Loader;
+import org.bytedeco.javacpp.presets.javacpp;
 import org.bytedeco.opencv.global.opencv_core;
 import org.bytedeco.opencv.opencv_core.Mat;
 import org.bytedeco.opencv.opencv_core.Point;
@@ -37,6 +38,8 @@ public class OpenCvTemplateMatcher implements ImageMatcher {
     private static final double TEMPLATE_COLOR_ACTIVITY_BASELINE = 0.25D;
 
     public OpenCvTemplateMatcher() {
+        WindowsJavaCppRuntimeSupport.prepare();
+        Loader.load(javacpp.class);
         Loader.load(opencv_core.class);
     }
 

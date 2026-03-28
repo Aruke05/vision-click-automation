@@ -12,6 +12,7 @@ import com.example.autoscript.script.ImageTemplateCondition;
 import com.example.autoscript.script.MonitorRule;
 import com.example.autoscript.script.StopMonitoringActionStep;
 import com.example.autoscript.service.ActionExecutor;
+import com.example.autoscript.service.ApplicationRelauncher;
 import com.example.autoscript.service.CaptureService;
 import com.example.autoscript.service.ConfigService;
 import com.example.autoscript.service.GlobalHotkeyService;
@@ -19,6 +20,7 @@ import com.example.autoscript.service.ImageMatcher;
 import com.example.autoscript.service.JavaImageTemplateMatcher;
 import com.example.autoscript.service.MonitoringService;
 import com.example.autoscript.service.OpenCvTemplateMatcher;
+import com.example.autoscript.service.OpenCvRecoveryStateStore;
 import com.example.autoscript.service.RobotCaptureService;
 import com.example.autoscript.service.VcRedistributableInstaller;
 import com.example.autoscript.service.WindowClickExecutor;
@@ -26,10 +28,12 @@ import com.example.autoscript.service.WindowService;
 import com.example.autoscript.service.WindowsWindowService;
 
 import javax.imageio.ImageIO;
+import javax.swing.AbstractCellEditor;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JDialog;
 import javax.swing.DropMode;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -56,8 +60,11 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.event.ChangeListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.table.TableCellEditor;
+import javax.swing.table.TableCellRenderer;
+import javax.swing.table.TableColumn;
 import java.awt.BorderLayout;
-import java.awt.CardLayout;
+import java.awt.Component;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.StringSelection;
 import java.awt.datatransfer.Transferable;
@@ -81,20 +88,24 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainFrame extends JFrame {
 
     private static final CaptureMode DEFAULT_CAPTURE_MODE = CaptureMode.WINDOW_HANDLE_FALLBACK_SCREEN;
-    private static final String CONDITION_EDITOR_CARD_PLACEHOLDER = "placeholder";
-    private static final String CONDITION_EDITOR_CARD_EDITOR = "editor";
+    private static final int DEFAULT_BIND_PANEL_WIDTH = 520;
+    private static final Dimension CONDITION_EDITOR_DIALOG_SIZE = new Dimension(780, 760);
 
     private final WindowService windowService;
     private final ConfigService configService;
@@ -109,10 +120,10 @@ public class MainFrame extends JFrame {
     private final JTable windowTable = new JTable(windowTableModel);
     private final ConditionTableModel conditionTableModel = new ConditionTableModel();
     private final JTable conditionTable = new JTable(conditionTableModel);
-    private final JPanel conditionEditorCardPanel = new JPanel(new CardLayout());
-    private final JLabel editingConditionLabel = new JLabel("未进入编辑模式，请先选中条件后点击“编辑选中条件”");
     private final JTextArea logArea = new JTextArea();
-    private final JLabel bindStatusLabel = new JLabel("当前未绑定窗口");
+    private final JLabel bindStatusLabel = new JLabel("当前未绑定窗口，请先打开绑定栏并绑定窗口");
+    private final JButton showBindPanelButton = new JButton("打开绑定栏");
+    private final JButton hideBindPanelButton = new JButton("收起绑定栏");
     private final JButton toggleLogPanelButton = new JButton("隐藏日志");
 
     private final JTextField conditionNameField = new JTextField("条件1");
@@ -141,6 +152,7 @@ public class MainFrame extends JFrame {
     private final javax.swing.Timer clickOverlayTimer;
     private final SelectionMaskOverlayWindow selectionMaskOverlay;
     private final javax.swing.Timer basicConfigAutoSaveTimer;
+    private final javax.swing.Timer boundWindowWatchTimer;
 
     private WindowInfo boundWindow;
     private CaptureMode boundCaptureMode = DEFAULT_CAPTURE_MODE;
@@ -152,13 +164,20 @@ public class MainFrame extends JFrame {
     private boolean clickOverlayPositionLogged = false;
     private boolean syncingConditionEditor = false;
     private int editingConditionRow = -1;
+    private int previewConditionRow = -1;
+    private JPanel bindPanelContainer;
     private JSplitPane configVerticalSplitPane;
+    private JDialog conditionEditorDialog;
+    private boolean bindPanelCollapsed = false;
     private boolean logPanelCollapsed = false;
     private int lastLogDividerLocation = -1;
     private boolean suppressBasicConfigAutoSave = false;
     private ConditionConfig copiedConditionClipboard;
     private String imageMatcherStartupWarning;
+    private String imageMatcherStartupDiagnostic;
+    private boolean imageMatcherUsingOpenCv;
     private final AtomicBoolean vcRuntimeInstallInProgress = new AtomicBoolean(false);
+    private final OpenCvRecoveryStateStore openCvRecoveryStateStore = new OpenCvRecoveryStateStore();
     private final Path projectRootPath = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     private final Path scriptDirPath = projectRootPath.resolve("script").toAbsolutePath().normalize();
     private final Path capturesDirPath = projectRootPath.resolve("captures").toAbsolutePath().normalize();
@@ -182,9 +201,11 @@ public class MainFrame extends JFrame {
         this.selectionMaskOverlay = new SelectionMaskOverlayWindow(this);
         this.basicConfigAutoSaveTimer = new javax.swing.Timer(180, e -> autoSaveBasicConfigNow());
         this.basicConfigAutoSaveTimer.setRepeats(false);
+        this.boundWindowWatchTimer = new javax.swing.Timer(1000, e -> ensureBoundWindowStillValid());
 
         initLookAndFeel();
         initComponents();
+        collapseLogPanelByDefault();
         showImageMatcherStartupWarningIfNeeded();
         installRegionPreviewListeners();
         installBasicConfigAutoSaveListeners();
@@ -197,30 +218,46 @@ public class MainFrame extends JFrame {
         }
         refreshWindows();
         tryRestoreBinding();
+        ensureBindPanelState();
+        boundWindowWatchTimer.start();
         log("当前进程权限: " + (runningAsAdmin ? "管理员" : "普通用户"));
     }
 
     private ImageMatcher createImageMatcher() {
         try {
-            return new OpenCvTemplateMatcher();
+            OpenCvTemplateMatcher matcher = new OpenCvTemplateMatcher();
+            imageMatcherUsingOpenCv = true;
+            imageMatcherStartupWarning = null;
+            imageMatcherStartupDiagnostic = null;
+            return matcher;
         } catch (Throwable firstFailure) {
             String firstDetail = resolveRootCauseMessage(firstFailure);
             String firstSummary = summarizeDiagnosticDetail(firstDetail);
+            String firstDiagnostic = buildOpenCvFailureDiagnostic(firstFailure);
+            imageMatcherUsingOpenCv = false;
             boolean cacheCleared = clearJavaCppOpenCvCache();
             if (cacheCleared) {
                 log("OpenCV 首次加载失败，已自动清理 .javacpp OpenCV 缓存并重试一次。"
                         + (firstDetail.isBlank() ? "" : " 首次失败详情: " + firstDetail));
                 try {
                     OpenCvTemplateMatcher matcher = new OpenCvTemplateMatcher();
+                    imageMatcherUsingOpenCv = true;
+                    imageMatcherStartupWarning = null;
+                    imageMatcherStartupDiagnostic = null;
                     log("OpenCV 缓存清理后重试成功，已恢复使用 OpenCV 模板匹配");
                     return matcher;
                 } catch (Throwable retryFailure) {
                     String retryDetail = resolveRootCauseMessage(retryFailure);
                     String retrySummary = summarizeDiagnosticDetail(retryDetail);
+                    String retryDiagnostic = buildOpenCvFailureDiagnostic(retryFailure);
                     imageMatcherStartupWarning = "OpenCV 本地库加载失败，已自动清理 .javacpp 缓存并重试一次，但仍未恢复。"
                             + " 已切换为纯 Java 模板匹配。"
                             + (retrySummary.isBlank() ? "" : "\n重试后摘要: " + retrySummary)
                             + "\n完整错误详情已写入运行日志。";
+                    imageMatcherStartupDiagnostic = "首次加载失败诊断:\n"
+                            + firstDiagnostic
+                            + "\n\n清理 .javacpp OpenCV 缓存后再次重试，仍然失败。\n\n重试失败诊断:\n"
+                            + retryDiagnostic;
                     log(imageMatcherStartupWarning.replace(System.lineSeparator(), " "));
                     if (!retryDetail.isBlank()) {
                         log("OpenCV 重试后完整错误详情: " + retryDetail);
@@ -232,6 +269,7 @@ public class MainFrame extends JFrame {
                     + " 当前仍可运行，但匹配速度可能变慢。"
                     + (firstSummary.isBlank() ? "" : "\n错误摘要: " + firstSummary)
                     + "\n完整错误详情已写入运行日志。";
+            imageMatcherStartupDiagnostic = firstDiagnostic;
             log(imageMatcherStartupWarning.replace(System.lineSeparator(), " "));
             if (!firstDetail.isBlank()) {
                 log("OpenCV 完整错误详情: " + firstDetail);
@@ -304,6 +342,11 @@ public class MainFrame extends JFrame {
     }
 
     private void showImageMatcherStartupWarningIfNeeded() {
+        Optional<OpenCvRecoveryStateStore.RecoveryState> recoveryState = loadOpenCvRecoveryState();
+        if (recoveryState.isPresent()) {
+            SwingUtilities.invokeLater(() -> handleOpenCvRecoveryStateOnStartup(recoveryState.get()));
+            return;
+        }
         if (imageMatcherStartupWarning == null || imageMatcherStartupWarning.isBlank()) {
             return;
         }
@@ -313,7 +356,7 @@ public class MainFrame extends JFrame {
             String prompt = message
                     + "\n\n检测到 OpenCV 本地依赖缺失。通常是 Microsoft Visual C++ x64 运行库未安装。"
                     + "\n是否现在自动下载安装并安装运行库？"
-                    + "\n安装完成后请重新启动程序以启用 OpenCV。";
+                    + "\n安装完成后程序会自动重启，并在下次启动时自动验证 OpenCV 是否恢复。";
             Object[] options = {"立即自动安装", "继续纯 Java 模式"};
             int choice = showScrollableOptionDialog(parent, prompt, "OpenCV 依赖缺失",
                     JOptionPane.WARNING_MESSAGE, options, options[0]);
@@ -334,7 +377,7 @@ public class MainFrame extends JFrame {
                 VcRedistributableInstaller installer = new VcRedistributableInstaller(projectRootPath, runningAsAdmin, this::log);
                 VcRedistributableInstaller.InstallResult result = installer.install();
                 log(result.message());
-                SwingUtilities.invokeLater(() -> showVcRuntimeInstallResult(result));
+                SwingUtilities.invokeLater(() -> handleVcRuntimeInstallCompletion(result));
             } finally {
                 vcRuntimeInstallInProgress.set(false);
             }
@@ -343,7 +386,7 @@ public class MainFrame extends JFrame {
         worker.start();
     }
 
-    private void showVcRuntimeInstallResult(VcRedistributableInstaller.InstallResult result) {
+    private void handleVcRuntimeInstallCompletion(VcRedistributableInstaller.InstallResult result) {
         if (result == null) {
             showScrollableMessageDialog(this,
                     "运行库安装结果未知，当前继续使用纯 Java 匹配。",
@@ -351,18 +394,248 @@ public class MainFrame extends JFrame {
                     JOptionPane.WARNING_MESSAGE);
             return;
         }
-        int messageType = switch (result.status()) {
-            case INSTALLED, RESTART_REQUIRED -> JOptionPane.INFORMATION_MESSAGE;
-            case CANCELED -> JOptionPane.WARNING_MESSAGE;
-            case FAILED -> JOptionPane.ERROR_MESSAGE;
-        };
-        String suffix = result.status() == VcRedistributableInstaller.InstallStatus.FAILED
-                ? "\n如需手动安装，请打开: " + VcRedistributableInstaller.OFFICIAL_DOWNLOAD_URI
-                : "";
-        showScrollableMessageDialog(this,
-                result.message() + suffix,
-                "运行库安装",
-                messageType);
+        switch (result.status()) {
+            case INSTALLED -> restartApplicationAfterVcInstall(result);
+            case RESTART_REQUIRED -> {
+                persistOpenCvRecoveryState(result);
+                showScrollableMessageDialog(this,
+                        buildVcInstallRestartRequiredMessage(result),
+                        "运行库安装",
+                        JOptionPane.INFORMATION_MESSAGE);
+            }
+            case CANCELED -> showScrollableMessageDialog(this,
+                    buildVcInstallCanceledMessage(result),
+                    "运行库安装",
+                    JOptionPane.WARNING_MESSAGE);
+            case FAILED -> showScrollableMessageDialog(this,
+                    buildVcInstallFailedMessage(result),
+                    "运行库安装",
+                    JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void restartApplicationAfterVcInstall(VcRedistributableInstaller.InstallResult result) {
+        persistOpenCvRecoveryState(result);
+        try {
+            boolean cacheCleared = clearJavaCppOpenCvCache();
+            if (cacheCleared) {
+                log("安装完成后已再次清理 .javacpp OpenCV 缓存，准备自动重启验证。");
+            }
+            ApplicationRelauncher relauncher = new ApplicationRelauncher(projectRootPath);
+            ApplicationRelauncher.RelaunchPlan plan = relauncher.relaunch();
+            log("运行库安装完成，已启动新进程验证 OpenCV: " + plan.description());
+            shutdown();
+            dispose();
+            System.exit(0);
+        } catch (Exception e) {
+            String message = buildVcInstallRestartFailureMessage(result, e);
+            log("自动重启失败: " + e.getMessage());
+            showScrollableMessageDialog(this, message, "自动重启失败", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private Optional<OpenCvRecoveryStateStore.RecoveryState> loadOpenCvRecoveryState() {
+        try {
+            return openCvRecoveryStateStore.load();
+        } catch (Exception e) {
+            log("读取 OpenCV 自动恢复状态失败: " + e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private void persistOpenCvRecoveryState(VcRedistributableInstaller.InstallResult result) {
+        if (result == null) {
+            return;
+        }
+        try {
+            openCvRecoveryStateStore.save(new OpenCvRecoveryStateStore.RecoveryState(
+                    System.currentTimeMillis(),
+                    result.status().name(),
+                    result.exitCode(),
+                    safeText(result.message()),
+                    result.installerPath() == null ? "" : result.installerPath().toString(),
+                    result.logPath() == null ? "" : result.logPath().toString(),
+                    safeText(imageMatcherStartupWarning),
+                    safeText(imageMatcherStartupDiagnostic)
+            ));
+            log("已写入 OpenCV 自动恢复状态: " + openCvRecoveryStateStore.getStatePath());
+        } catch (Exception e) {
+            log("写入 OpenCV 自动恢复状态失败: " + e.getMessage());
+        }
+    }
+
+    private void clearOpenCvRecoveryStateQuietly() {
+        try {
+            openCvRecoveryStateStore.clear();
+        } catch (Exception e) {
+            log("清理 OpenCV 自动恢复状态失败: " + e.getMessage());
+        }
+    }
+
+    private void handleOpenCvRecoveryStateOnStartup(OpenCvRecoveryStateStore.RecoveryState state) {
+        java.awt.Component parent = isDisplayable() || isShowing() ? this : null;
+        if (imageMatcherUsingOpenCv) {
+            clearOpenCvRecoveryStateQuietly();
+            log("OpenCV 自动恢复验证通过，当前已恢复为 OpenCV 模板匹配。");
+            return;
+        }
+        if (VcRedistributableInstaller.InstallStatus.RESTART_REQUIRED.name().equalsIgnoreCase(state.installStatus())) {
+            showScrollableMessageDialog(parent,
+                    buildOpenCvRecoveryFailureMessage(state, true),
+                    "OpenCV 仍未恢复",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        Object[] options = {"再次自动安装", "继续纯 Java 模式"};
+        int choice = showScrollableOptionDialog(parent,
+                buildOpenCvRecoveryFailureMessage(state, false),
+                "OpenCV 自动安装后仍未恢复",
+                JOptionPane.ERROR_MESSAGE,
+                options,
+                options[0]);
+        if (choice == JOptionPane.YES_OPTION) {
+            installVcRuntimeAsync();
+        }
+    }
+
+    private String buildOpenCvFailureDiagnostic(Throwable throwable) {
+        StringBuilder diagnostic = new StringBuilder();
+        diagnostic.append("Java 版本: ").append(System.getProperty("java.version", "")).append('\n');
+        diagnostic.append("Java Home: ").append(System.getProperty("java.home", "")).append('\n');
+        diagnostic.append("操作系统: ").append(System.getProperty("os.name", "")).append(' ')
+                .append(System.getProperty("os.version", "")).append('\n');
+        diagnostic.append("系统架构: ").append(System.getProperty("os.arch", "")).append('\n');
+        diagnostic.append("运行目录: ").append(projectRootPath).append('\n');
+        Path cacheRoot = resolveJavaCppCacheRoot();
+        if (cacheRoot != null) {
+            diagnostic.append(".javacpp 缓存: ").append(cacheRoot).append('\n');
+        }
+        diagnostic.append('\n').append("异常链:").append('\n');
+
+        int index = 1;
+        Set<Throwable> visited = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = throwable;
+        while (current != null && visited.add(current)) {
+            diagnostic.append(index++).append(". ").append(current.getClass().getName());
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                diagnostic.append(": ").append(message.trim());
+            }
+            diagnostic.append('\n');
+            current = current.getCause();
+        }
+        return diagnostic.toString().trim();
+    }
+
+    private String buildVcInstallRestartRequiredMessage(VcRedistributableInstaller.InstallResult result) {
+        StringBuilder message = new StringBuilder();
+        message.append(result.message());
+        message.append("\n\n程序已经记录本次安装结果。");
+        message.append("\n完成系统重启后，再重新打开程序时会自动验证 OpenCV 是否恢复。");
+        message.append("\n如果仍有问题，会自动弹出可复制的诊断信息。");
+        appendInstallResultDetails(message, result, false);
+        return message.toString();
+    }
+
+    private String buildVcInstallCanceledMessage(VcRedistributableInstaller.InstallResult result) {
+        StringBuilder message = new StringBuilder();
+        message.append(result.message());
+        appendInstallResultDetails(message, result, false);
+        return message.toString();
+    }
+
+    private String buildVcInstallFailedMessage(VcRedistributableInstaller.InstallResult result) {
+        StringBuilder message = new StringBuilder();
+        message.append(result.message());
+        message.append("\n\n如需手动安装，请打开: ").append(VcRedistributableInstaller.OFFICIAL_DOWNLOAD_URI);
+        appendInstallResultDetails(message, result, true);
+        return message.toString();
+    }
+
+    private String buildVcInstallRestartFailureMessage(VcRedistributableInstaller.InstallResult result, Exception restartError) {
+        StringBuilder message = new StringBuilder();
+        message.append("运行库安装已完成，但自动重启程序失败。");
+        message.append("\n请先复制下面信息发给开发者，然后手动重新打开程序。");
+        appendInstallResultDetails(message, result, false);
+        message.append("\n\n自动重启失败详情:\n").append(restartError.getClass().getName());
+        if (restartError.getMessage() != null && !restartError.getMessage().isBlank()) {
+            message.append(": ").append(restartError.getMessage().trim());
+        }
+        return message.toString();
+    }
+
+    private String buildOpenCvRecoveryFailureMessage(OpenCvRecoveryStateStore.RecoveryState state, boolean rebootStillPending) {
+        StringBuilder message = new StringBuilder();
+        if (rebootStillPending) {
+            message.append("上一次自动安装已经完成，但安装器要求先重启系统。");
+            message.append("\n如果你还没有重启系统，这次 OpenCV 仍未恢复是预期现象。");
+            message.append("\n请重启系统后再次打开程序；如果仍失败，再把下面信息复制给开发者。");
+        } else {
+            message.append("自动安装和自动重启已经执行，但这次启动 OpenCV 仍未恢复。");
+            message.append("\n程序已继续使用纯 Java 模板匹配。");
+            message.append("\n下面文本可直接复制给开发者排查。");
+        }
+        message.append("\n\n安装时间: ").append(formatEpochMillis(state.createdAtEpochMillis()));
+        if (!state.installStatus().isBlank()) {
+            message.append("\n安装状态: ").append(state.installStatus());
+        }
+        if (state.installExitCode() >= 0) {
+            message.append("\n安装退出码: ").append(state.installExitCode());
+        }
+        if (!state.installMessage().isBlank()) {
+            message.append("\n安装结果: ").append(state.installMessage());
+        }
+        if (!state.installerPath().isBlank()) {
+            message.append("\n安装包: ").append(state.installerPath());
+        }
+        if (!state.installerLogPath().isBlank()) {
+            message.append("\n安装日志: ").append(state.installerLogPath());
+        }
+        if (!state.startupWarning().isBlank()) {
+            message.append("\n\n安装前启动告警:\n").append(state.startupWarning());
+        }
+        if (!state.startupDiagnostic().isBlank()) {
+            message.append("\n\n安装前启动诊断:\n").append(state.startupDiagnostic());
+        }
+        if (!safeText(imageMatcherStartupWarning).isBlank()) {
+            message.append("\n\n本次启动告警:\n").append(imageMatcherStartupWarning);
+        }
+        if (!safeText(imageMatcherStartupDiagnostic).isBlank()) {
+            message.append("\n\n本次启动诊断:\n").append(imageMatcherStartupDiagnostic);
+        }
+        return message.toString();
+    }
+
+    private void appendInstallResultDetails(StringBuilder message,
+                                            VcRedistributableInstaller.InstallResult result,
+                                            boolean copyableHint) {
+        if (message == null || result == null) {
+            return;
+        }
+        if (copyableHint) {
+            message.append("\n\n下面文本可直接复制给开发者排查。");
+        }
+        message.append("\n安装状态: ").append(result.status());
+        message.append("\n安装退出码: ").append(result.exitCode());
+        if (result.installerPath() != null) {
+            message.append("\n安装包: ").append(result.installerPath());
+        }
+        if (result.logPath() != null) {
+            message.append("\n安装日志: ").append(result.logPath());
+        }
+    }
+
+    private String formatEpochMillis(long epochMillis) {
+        try {
+            return LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        } catch (Exception ignored) {
+            return String.valueOf(epochMillis);
+        }
+    }
+
+    private String safeText(String value) {
+        return value == null ? "" : value;
     }
 
     private String resolveRootCauseMessage(Throwable throwable) {
@@ -452,9 +725,15 @@ public class MainFrame extends JFrame {
 
         JPanel leftPanel = buildWindowPanel();
         JPanel rightPanel = buildConfigPanel();
-        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel);
-        splitPane.setDividerLocation(520);
-        add(splitPane, BorderLayout.CENTER);
+        this.bindPanelContainer = new JPanel(new BorderLayout());
+        this.bindPanelContainer.setPreferredSize(new Dimension(DEFAULT_BIND_PANEL_WIDTH, 10));
+        this.bindPanelContainer.add(leftPanel, BorderLayout.CENTER);
+
+        JPanel contentPanel = new JPanel(new BorderLayout(8, 0));
+        contentPanel.add(buildBindPanelToolbar(), BorderLayout.NORTH);
+        contentPanel.add(bindPanelContainer, BorderLayout.WEST);
+        contentPanel.add(rightPanel, BorderLayout.CENTER);
+        add(contentPanel, BorderLayout.CENTER);
 
         addWindowListener(new java.awt.event.WindowAdapter() {
             @Override
@@ -462,6 +741,18 @@ public class MainFrame extends JFrame {
                 shutdown();
             }
         });
+    }
+
+    private JPanel buildBindPanelToolbar() {
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 6));
+        showBindPanelButton.addActionListener(e -> {
+            showBindPanel();
+            refreshWindows();
+        });
+        hideBindPanelButton.addActionListener(e -> hideBindPanel());
+        toolbar.add(showBindPanelButton);
+        toolbar.add(hideBindPanelButton);
+        return toolbar;
     }
 
     private void installRegionPreviewListeners() {
@@ -597,13 +888,14 @@ public class MainFrame extends JFrame {
 
     private JPanel buildConditionConfigTab() {
         conditionTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        conditionTable.setRowHeight(24);
+        conditionTable.setRowHeight(28);
         conditionTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) {
                 onConditionSelectionChanged();
             }
         });
         installConditionTableContextMenuAndDragReorder();
+        installConditionPreviewButtonColumn();
 
         JPanel tablePanel = new JPanel(new BorderLayout(6, 6));
         tablePanel.setBorder(BorderFactory.createTitledBorder("轮询条件顺序（命中即停止本轮）"));
@@ -632,17 +924,18 @@ public class MainFrame extends JFrame {
         manageButtons.add(moveUpButton);
         manageButtons.add(moveDownButton);
         tablePanel.add(manageButtons, BorderLayout.SOUTH);
-
-        JPanel editorPanel = buildConditionEditorContainer();
-
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tablePanel, editorPanel);
-        splitPane.setResizeWeight(0.43D);
-        splitPane.setDividerLocation(230);
-        splitPane.setBorder(BorderFactory.createEmptyBorder());
-
         JPanel root = new JPanel(new BorderLayout(0, 0));
-        root.add(splitPane, BorderLayout.CENTER);
+        root.add(tablePanel, BorderLayout.CENTER);
         return root;
+    }
+
+    private void installConditionPreviewButtonColumn() {
+        TableColumn previewColumn = conditionTable.getColumnModel().getColumn(ConditionTableModel.PREVIEW_COLUMN_INDEX);
+        previewColumn.setMinWidth(96);
+        previewColumn.setPreferredWidth(96);
+        previewColumn.setMaxWidth(110);
+        previewColumn.setCellRenderer(new ConditionPreviewButtonRenderer());
+        previewColumn.setCellEditor(new ConditionPreviewButtonEditor());
     }
 
     private void installConditionTableContextMenuAndDragReorder() {
@@ -694,27 +987,6 @@ public class MainFrame extends JFrame {
         deleteItem.setEnabled(hasSelected);
         pasteItem.setEnabled(copiedConditionClipboard != null);
         menu.show(event.getComponent(), event.getX(), event.getY());
-    }
-
-    private JPanel buildConditionEditorContainer() {
-        JPanel editorPanel = buildConditionEditorPanel();
-        JPanel placeholderPanel = buildConditionEditorPlaceholderPanel();
-        conditionEditorCardPanel.add(placeholderPanel, CONDITION_EDITOR_CARD_PLACEHOLDER);
-        conditionEditorCardPanel.add(editorPanel, CONDITION_EDITOR_CARD_EDITOR);
-
-        JPanel container = new JPanel(new BorderLayout(0, 6));
-        container.add(editingConditionLabel, BorderLayout.NORTH);
-        container.add(conditionEditorCardPanel, BorderLayout.CENTER);
-        showConditionEditorPlaceholder("未进入编辑模式，请先选中条件后点击“编辑选中条件”");
-        return container;
-    }
-
-    private JPanel buildConditionEditorPlaceholderPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createTitledBorder("条件编辑"));
-        JLabel hint = new JLabel("请先在上方选中一条条件，然后点击“编辑选中条件”。", JLabel.CENTER);
-        panel.add(hint, BorderLayout.CENTER);
-        return panel;
     }
 
     private JPanel buildConditionEditorPanel() {
@@ -788,7 +1060,6 @@ public class MainFrame extends JFrame {
         actionBar.add(startButton);
         actionBar.add(stopButton);
         actionBar.add(captureRegionButton);
-        actionBar.add(togglePreviewOverlayButton);
         actionBar.add(toggleLogPanelButton);
         return actionBar;
     }
@@ -844,6 +1115,7 @@ public class MainFrame extends JFrame {
         log("已绑定窗口: " + selected.toDisplayText());
         refreshRegionOverlayQuietly();
         refreshClickOverlayQuietly();
+        hideBindPanel();
     }
 
     private void unbindWindow() {
@@ -853,25 +1125,18 @@ public class MainFrame extends JFrame {
         boundWindow = null;
         boundCaptureMode = DEFAULT_CAPTURE_MODE;
         updateBindStatus();
-        previewOverlayEnabled = false;
-        regionOverlayErrorLogged = false;
-        regionOverlayPositionLogged = false;
-        togglePreviewOverlayButton.setText("显示区域与点击预览");
-        regionOverlayTimer.stop();
-        regionOverlay.hideOverlay();
-        clickOverlayErrorLogged = false;
-        clickOverlayPositionLogged = false;
-        clickOverlayTimer.stop();
-        clickOverlay.hide();
+        resetPreviewOverlayState();
+        showBindPanel();
         log("已解绑当前窗口");
     }
 
     private void updateBindStatus() {
         if (boundWindow == null) {
-            bindStatusLabel.setText("当前未绑定窗口");
+            bindStatusLabel.setText("当前未绑定窗口，请先打开绑定栏并绑定窗口");
         } else {
             bindStatusLabel.setText("当前绑定: " + boundWindow.toDisplayText() + " | 截图策略=" + captureModeLabel(boundCaptureMode));
         }
+        updateBindPanelButtons();
     }
 
     private void detectCaptureModeForBoundWindow() {
@@ -1128,7 +1393,13 @@ public class MainFrame extends JFrame {
 
     private boolean ensureBoundWindowReady(String actionName) {
         if (boundWindow == null) {
+            showBindPanel();
             JOptionPane.showMessageDialog(this, "请先绑定一个窗口。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return false;
+        }
+        if (!isBoundWindowAliveQuietly()) {
+            handleInvalidBoundWindow("目标窗口已失效，已自动展开绑定栏，请重新绑定。", true);
+            JOptionPane.showMessageDialog(this, "目标窗口已失效，请重新绑定后再" + actionName + "。", "提示", JOptionPane.INFORMATION_MESSAGE);
             return false;
         }
         try {
@@ -1141,7 +1412,12 @@ public class MainFrame extends JFrame {
     }
 
     private Rectangle requireBoundClientRect(String actionName) {
-        if (boundWindow == null || !windowService.isAlive(boundWindow)) {
+        if (boundWindow == null) {
+            showBindPanel();
+            throw new IllegalStateException("请先绑定窗口后再" + actionName + "。");
+        }
+        if (!windowService.isAlive(boundWindow)) {
+            handleInvalidBoundWindow("目标窗口已失效，已自动展开绑定栏，请重新绑定。", true);
             throw new IllegalStateException("目标窗口已失效，请重新绑定后再" + actionName + "。");
         }
         if (windowService.isMinimized(boundWindow)) {
@@ -1174,43 +1450,13 @@ public class MainFrame extends JFrame {
     }
 
     private void onConditionSelectionChanged() {
-        if (syncingConditionEditor) {
+        if (syncingConditionEditor || !previewOverlayEnabled || previewConditionRow < 0) {
             return;
         }
-        boolean shouldRefreshPreview = previewOverlayEnabled;
-        if (shouldRefreshPreview) {
-            hidePreviewOverlays();
+        if (conditionTable.getSelectedRow() == previewConditionRow) {
             regionOverlayPositionLogged = false;
-            clickOverlayPositionLogged = false;
+            refreshRegionOverlayQuietly();
         }
-        int selectedRow = conditionTable.getSelectedRow();
-        if (selectedRow < 0) {
-            showConditionEditorPlaceholder("未选中条件，请先选中后点击“编辑选中条件”");
-            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
-            return;
-        }
-        ConditionConfig condition = conditionTableModel.getConditionAt(selectedRow);
-        if (condition == null) {
-            showConditionEditorPlaceholder("所选条件不存在，请重新选择");
-            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
-            return;
-        }
-        if (editingConditionRow == selectedRow) {
-            updateEditingConditionLabel(selectedRow, condition);
-            refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
-            return;
-        }
-        String name = resolveConditionName(condition, selectedRow);
-        showConditionEditorPlaceholder("已选中: " + name + "，点击“编辑选中条件”开始编辑");
-        refreshPreviewAfterConditionSwitch(shouldRefreshPreview);
-    }
-
-    private void refreshPreviewAfterConditionSwitch(boolean shouldRefreshPreview) {
-        if (!shouldRefreshPreview) {
-            return;
-        }
-        refreshRegionOverlayQuietly();
-        refreshClickOverlayQuietly();
     }
 
     private void beginEditSelectedCondition() {
@@ -1224,11 +1470,7 @@ public class MainFrame extends JFrame {
             JOptionPane.showMessageDialog(this, "未找到选中的条件。", "提示", JOptionPane.INFORMATION_MESSAGE);
             return;
         }
-        editingConditionRow = selectedRow;
-        loadConditionToEditor(condition);
-        showConditionEditor();
-        updateEditingConditionLabel(selectedRow, condition);
-        log("进入条件编辑: " + resolveConditionName(condition, selectedRow));
+        openConditionEditorDialog(selectedRow, condition);
     }
 
     private void autoApplyEditorToEditingCondition() {
@@ -1236,7 +1478,7 @@ public class MainFrame extends JFrame {
             return;
         }
         if (editingConditionRow >= conditionTableModel.getConditionCount()) {
-            showConditionEditorPlaceholder("编辑目标已失效，请重新选择条件并点击“编辑选中条件”");
+            showConditionEditorPlaceholder(null);
             return;
         }
         try {
@@ -1249,26 +1491,70 @@ public class MainFrame extends JFrame {
                 conditionTable.getSelectionModel().setSelectionInterval(editingConditionRow, editingConditionRow);
             }
             updateEditingConditionLabel(editingConditionRow, condition);
+            if (previewConditionRow == editingConditionRow && previewOverlayEnabled) {
+                regionOverlayPositionLogged = false;
+                refreshRegionOverlayQuietly();
+            }
         } catch (Exception e) {
             log("条件编辑自动应用失败: " + e.getMessage());
         }
     }
 
-    private void showConditionEditorPlaceholder(String statusText) {
+    private void showConditionEditorPlaceholder(String ignoredStatusText) {
         editingConditionRow = -1;
-        CardLayout layout = (CardLayout) conditionEditorCardPanel.getLayout();
-        layout.show(conditionEditorCardPanel, CONDITION_EDITOR_CARD_PLACEHOLDER);
-        editingConditionLabel.setText(statusText);
+        if (conditionEditorDialog != null && conditionEditorDialog.isDisplayable()) {
+            conditionEditorDialog.setTitle("条件编辑");
+        }
     }
 
-    private void showConditionEditor() {
-        CardLayout layout = (CardLayout) conditionEditorCardPanel.getLayout();
-        layout.show(conditionEditorCardPanel, CONDITION_EDITOR_CARD_EDITOR);
+    private void openConditionEditorDialog(int row, ConditionConfig condition) {
+        if (conditionEditorDialog != null && conditionEditorDialog.isDisplayable()) {
+            conditionEditorDialog.dispose();
+        }
+        editingConditionRow = row;
+        loadConditionToEditor(condition);
+
+        JDialog dialog = new JDialog(this, buildConditionEditorDialogTitle(row, condition), true);
+        this.conditionEditorDialog = dialog;
+        JPanel content = new JPanel(new BorderLayout(0, 8));
+        content.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        content.add(new JScrollPane(buildConditionEditorPanel()), BorderLayout.CENTER);
+
+        JPanel footer = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        JButton closeButton = new JButton("完成");
+        closeButton.addActionListener(e -> dialog.dispose());
+        footer.add(closeButton);
+        content.add(footer, BorderLayout.SOUTH);
+
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        dialog.setContentPane(content);
+        dialog.setSize(CONDITION_EDITOR_DIALOG_SIZE);
+        dialog.setLocationRelativeTo(this);
+        dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosed(java.awt.event.WindowEvent e) {
+                if (conditionEditorDialog == dialog) {
+                    conditionEditorDialog = null;
+                }
+                showConditionEditorPlaceholder(null);
+                if (previewConditionRow >= 0 && previewOverlayEnabled) {
+                    regionOverlayPositionLogged = false;
+                    refreshRegionOverlayQuietly();
+                }
+            }
+        });
+        log("进入条件编辑: " + resolveConditionName(condition, row));
+        dialog.setVisible(true);
+    }
+
+    private String buildConditionEditorDialogTitle(int row, ConditionConfig condition) {
+        return "编辑条件 - #" + (row + 1) + " " + resolveConditionName(condition, row);
     }
 
     private void updateEditingConditionLabel(int row, ConditionConfig condition) {
-        String name = resolveConditionName(condition, row);
-        editingConditionLabel.setText("正在编辑: #" + (row + 1) + "  " + name + "（修改自动生效）");
+        if (conditionEditorDialog != null && conditionEditorDialog.isDisplayable()) {
+            conditionEditorDialog.setTitle(buildConditionEditorDialogTitle(row, condition));
+        }
     }
 
     private void addConditionFromEditor() {
@@ -1341,6 +1627,7 @@ public class MainFrame extends JFrame {
         }
         ConditionConfig condition = conditionTableModel.getConditionAt(selectedRow);
         conditionTableModel.removeCondition(selectedRow);
+        updatePreviewConditionRowAfterRemoval(selectedRow);
         int count = conditionTableModel.getConditionCount();
         if (count > 0) {
             int next = Math.min(selectedRow, count - 1);
@@ -1360,6 +1647,7 @@ public class MainFrame extends JFrame {
         }
         int target = conditionTableModel.moveCondition(selectedRow, offset);
         conditionTable.getSelectionModel().setSelectionInterval(target, target);
+        updatePreviewConditionRowAfterSwap(selectedRow, target);
         showConditionEditorPlaceholder("条件顺序已调整，请点击“编辑选中条件”继续编辑");
     }
 
@@ -1376,6 +1664,7 @@ public class MainFrame extends JFrame {
         ConditionConfig moving = conditionTableModel.getConditionAt(fromRow);
         int movedTo = conditionTableModel.moveConditionTo(fromRow, targetRow);
         conditionTable.getSelectionModel().setSelectionInterval(movedTo, movedTo);
+        updatePreviewConditionRowAfterMove(fromRow, movedTo);
         showConditionEditorPlaceholder("条件顺序已调整，请点击“编辑选中条件”继续编辑");
         log("已拖拽调整条件顺序: " + resolveConditionName(moving, movedTo) + " -> #" + (movedTo + 1));
         return true;
@@ -1424,6 +1713,160 @@ public class MainFrame extends JFrame {
                 log("拖拽排序失败: " + e.getMessage());
                 return false;
             }
+        }
+    }
+
+    private void toggleConditionRegionPreview(int row) {
+        if (row < 0 || row >= conditionTableModel.getConditionCount()) {
+            return;
+        }
+        if (previewOverlayEnabled && previewConditionRow == row) {
+            stopConditionRegionPreview(true);
+            return;
+        }
+        if (!ensureBoundWindowReady("显示截图区域")) {
+            return;
+        }
+        ConditionConfig condition = conditionTableModel.getConditionAt(row);
+        if (condition == null) {
+            return;
+        }
+        previewConditionRow = row;
+        previewOverlayEnabled = true;
+        regionOverlayErrorLogged = false;
+        regionOverlayPositionLogged = false;
+        clickOverlayErrorLogged = false;
+        clickOverlayPositionLogged = false;
+        regionOverlayTimer.start();
+        clickOverlayTimer.stop();
+        clickOverlay.hide();
+        conditionTable.getSelectionModel().setSelectionInterval(row, row);
+        updateConditionPreviewButtons();
+        refreshRegionOverlayQuietly();
+        log("已显示条件区域预览: " + resolveConditionName(condition, row));
+    }
+
+    private void stopConditionRegionPreview(boolean logAction) {
+        int previousRow = previewConditionRow;
+        ConditionConfig previousCondition = previousRow >= 0 ? conditionTableModel.getConditionAt(previousRow) : null;
+        previewConditionRow = -1;
+        previewOverlayEnabled = false;
+        regionOverlayErrorLogged = false;
+        regionOverlayPositionLogged = false;
+        clickOverlayErrorLogged = false;
+        clickOverlayPositionLogged = false;
+        regionOverlayTimer.stop();
+        clickOverlayTimer.stop();
+        hidePreviewOverlays();
+        updateConditionPreviewButtons();
+        if (logAction && previousCondition != null) {
+            log("已隐藏条件区域预览: " + resolveConditionName(previousCondition, previousRow));
+        }
+    }
+
+    private void updateConditionPreviewButtons() {
+        conditionTable.repaint();
+    }
+
+    private String previewButtonTextForRow(int row) {
+        return previewOverlayEnabled && previewConditionRow == row ? "隐藏区域" : "显示区域";
+    }
+
+    private void updatePreviewConditionRowAfterRemoval(int removedRow) {
+        if (previewConditionRow < 0) {
+            return;
+        }
+        if (previewConditionRow == removedRow) {
+            stopConditionRegionPreview(false);
+            return;
+        }
+        if (previewConditionRow > removedRow) {
+            previewConditionRow--;
+            updateConditionPreviewButtons();
+            if (previewOverlayEnabled) {
+                regionOverlayPositionLogged = false;
+                refreshRegionOverlayQuietly();
+            }
+        }
+    }
+
+    private void updatePreviewConditionRowAfterSwap(int fromRow, int targetRow) {
+        if (previewConditionRow < 0 || fromRow == targetRow) {
+            return;
+        }
+        if (previewConditionRow == fromRow) {
+            previewConditionRow = targetRow;
+        } else if (previewConditionRow == targetRow) {
+            previewConditionRow = fromRow;
+        } else {
+            return;
+        }
+        updateConditionPreviewButtons();
+        if (previewOverlayEnabled) {
+            regionOverlayPositionLogged = false;
+            refreshRegionOverlayQuietly();
+        }
+    }
+
+    private void updatePreviewConditionRowAfterMove(int fromRow, int movedTo) {
+        if (previewConditionRow < 0 || fromRow == movedTo) {
+            return;
+        }
+        if (previewConditionRow == fromRow) {
+            previewConditionRow = movedTo;
+        } else if (fromRow < previewConditionRow && previewConditionRow <= movedTo) {
+            previewConditionRow--;
+        } else if (movedTo <= previewConditionRow && previewConditionRow < fromRow) {
+            previewConditionRow++;
+        } else {
+            return;
+        }
+        updateConditionPreviewButtons();
+        if (previewOverlayEnabled) {
+            regionOverlayPositionLogged = false;
+            refreshRegionOverlayQuietly();
+        }
+    }
+
+    private final class ConditionPreviewButtonRenderer extends JButton implements TableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(JTable table,
+                                                       Object value,
+                                                       boolean isSelected,
+                                                       boolean hasFocus,
+                                                       int row,
+                                                       int column) {
+            setText(previewButtonTextForRow(row));
+            return this;
+        }
+    }
+
+    private final class ConditionPreviewButtonEditor extends AbstractCellEditor implements TableCellEditor {
+        private final JButton button = new JButton();
+        private int currentRow = -1;
+
+        private ConditionPreviewButtonEditor() {
+            button.addActionListener(e -> {
+                int row = currentRow;
+                fireEditingStopped();
+                SwingUtilities.invokeLater(() -> toggleConditionRegionPreview(row));
+            });
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            return previewButtonTextForRow(currentRow);
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(JTable table,
+                                                     Object value,
+                                                     boolean isSelected,
+                                                     int row,
+                                                     int column) {
+            currentRow = row;
+            button.setText(previewButtonTextForRow(row));
+            return button;
         }
     }
 
@@ -1508,8 +1951,7 @@ public class MainFrame extends JFrame {
 
     private void togglePreviewOverlay() {
         if (!previewOverlayEnabled) {
-            if (boundWindow == null) {
-                JOptionPane.showMessageDialog(this, "请先绑定窗口，再显示预览。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            if (!ensureBoundWindowReady("显示预览")) {
                 return;
             }
             previewOverlayEnabled = true;
@@ -1541,6 +1983,125 @@ public class MainFrame extends JFrame {
     private void hidePreviewOverlays() {
         regionOverlay.hideOverlay();
         clickOverlay.hide();
+    }
+
+    private void collapseLogPanelByDefault() {
+        if (configVerticalSplitPane == null || logPanelCollapsed) {
+            return;
+        }
+        lastLogDividerLocation = configVerticalSplitPane.getDividerLocation();
+        configVerticalSplitPane.setDividerLocation(0.99D);
+        logPanelCollapsed = true;
+        toggleLogPanelButton.setText("显示日志");
+    }
+
+    private void ensureBindPanelState() {
+        if (boundWindow == null) {
+            showBindPanel();
+            return;
+        }
+        if (!isBoundWindowAliveQuietly()) {
+            handleInvalidBoundWindow("检测到绑定窗口已失效，已自动展开绑定栏，请重新绑定。", true);
+            return;
+        }
+        hideBindPanel();
+    }
+
+    private void ensureBoundWindowStillValid() {
+        if (!isDisplayable()) {
+            return;
+        }
+        if (boundWindow == null) {
+            showBindPanel();
+            return;
+        }
+        if (isBoundWindowAliveQuietly()) {
+            updateBindPanelButtons();
+            return;
+        }
+        handleInvalidBoundWindow("检测到绑定窗口已失效，已自动展开绑定栏，请重新绑定。", true);
+    }
+
+    private boolean isBoundWindowAliveQuietly() {
+        if (boundWindow == null) {
+            return false;
+        }
+        try {
+            return windowService.isAlive(boundWindow);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void showBindPanel() {
+        setBindPanelCollapsed(false);
+    }
+
+    private void hideBindPanel() {
+        if (boundWindow == null) {
+            showBindPanel();
+            return;
+        }
+        if (!isBoundWindowAliveQuietly()) {
+            handleInvalidBoundWindow("检测到绑定窗口已失效，已自动展开绑定栏，请重新绑定。", true);
+            return;
+        }
+        setBindPanelCollapsed(true);
+    }
+
+    private void setBindPanelCollapsed(boolean collapsed) {
+        bindPanelCollapsed = collapsed;
+        if (bindPanelContainer != null) {
+            bindPanelContainer.setVisible(!collapsed);
+            bindPanelContainer.revalidate();
+            bindPanelContainer.repaint();
+        }
+        updateBindPanelButtons();
+        revalidate();
+        repaint();
+    }
+
+    private void updateBindPanelButtons() {
+        boolean hasValidBinding = isBoundWindowAliveQuietly();
+        showBindPanelButton.setEnabled(bindPanelCollapsed);
+        hideBindPanelButton.setEnabled(!bindPanelCollapsed && hasValidBinding);
+    }
+
+    private void resetPreviewOverlayState() {
+        previewConditionRow = -1;
+        previewOverlayEnabled = false;
+        regionOverlayErrorLogged = false;
+        regionOverlayPositionLogged = false;
+        togglePreviewOverlayButton.setText("显示区域与点击预览");
+        regionOverlayTimer.stop();
+        regionOverlay.hideOverlay();
+        clickOverlayErrorLogged = false;
+        clickOverlayPositionLogged = false;
+        clickOverlayTimer.stop();
+        clickOverlay.hide();
+        updateConditionPreviewButtons();
+    }
+
+    private void handleInvalidBoundWindow(String message, boolean refreshWindowList) {
+        if (monitoringService.isRunning()) {
+            monitoringService.stop();
+        }
+        boundWindow = null;
+        boundCaptureMode = DEFAULT_CAPTURE_MODE;
+        updateBindStatus();
+        resetPreviewOverlayState();
+        showBindPanel();
+        if (refreshWindowList) {
+            try {
+                List<WindowInfo> windows = windowService.listWindows();
+                windowTableModel.setWindows(windows);
+            } catch (Exception e) {
+                log("刷新窗口列表失败: " + e.getMessage());
+            }
+        }
+        if (message != null && !message.isBlank()) {
+            log(message);
+        }
     }
 
     private void toggleLogPanel() {
@@ -1580,7 +2141,8 @@ public class MainFrame extends JFrame {
     }
 
     private void refreshClickOverlayQuietly() {
-        if (!previewOverlayEnabled) {
+        if (!previewOverlayEnabled || previewConditionRow >= 0) {
+            clickOverlay.hide();
             return;
         }
         try {
@@ -1624,7 +2186,7 @@ public class MainFrame extends JFrame {
     }
 
     private void refreshClickOverlay() {
-        if (!previewOverlayEnabled) {
+        if (!previewOverlayEnabled || previewConditionRow >= 0) {
             clickOverlay.hide();
             return;
         }
@@ -1654,17 +2216,17 @@ public class MainFrame extends JFrame {
     }
 
     private ConditionConfig resolveSelectedConditionForPreview() {
-        int selectedRow = conditionTable.getSelectedRow();
-        if (selectedRow < 0) {
+        int targetRow = previewConditionRow >= 0 ? previewConditionRow : conditionTable.getSelectedRow();
+        if (targetRow < 0) {
             return null;
         }
-        if (editingConditionRow == selectedRow && !syncingConditionEditor) {
+        if (editingConditionRow == targetRow && !syncingConditionEditor) {
             try {
                 return readConditionFromEditor();
             } catch (Exception ignored) {
             }
         }
-        return conditionTableModel.getConditionAt(selectedRow);
+        return conditionTableModel.getConditionAt(targetRow);
     }
 
     private Rectangle toOverlayCoordinates(Rectangle nativeRect) {
@@ -1795,10 +2357,20 @@ public class MainFrame extends JFrame {
             return;
         }
         if (boundWindow == null) {
+            showBindPanel();
             if (triggeredByHotkey) {
                 log("热键触发启动失败: 请先绑定窗口");
             } else {
                 JOptionPane.showMessageDialog(this, "请先绑定一个窗口。", "提示", JOptionPane.INFORMATION_MESSAGE);
+            }
+            return;
+        }
+        if (!isBoundWindowAliveQuietly()) {
+            handleInvalidBoundWindow("目标窗口已失效，已自动展开绑定栏，请重新绑定。", true);
+            if (triggeredByHotkey) {
+                log("热键触发启动失败: 目标窗口已失效，请重新绑定");
+            } else {
+                JOptionPane.showMessageDialog(this, "目标窗口已失效，请重新绑定后再启动监控。", "提示", JOptionPane.INFORMATION_MESSAGE);
             }
             return;
         }
@@ -2281,6 +2853,8 @@ public class MainFrame extends JFrame {
         boolean previousSuppress = suppressBasicConfigAutoSave;
         suppressBasicConfigAutoSave = true;
         try {
+            resetPreviewOverlayState();
+            showConditionEditorPlaceholder(null);
             intervalSpinner.setValue(config.getIntervalMs());
             repeatTriggerCheckBox.setSelected(config.isRepeatTrigger());
             moveWindowToBackAfterTriggerCheckBox.setSelected(config.isMoveWindowToBackAfterTrigger());
@@ -2309,9 +2883,6 @@ public class MainFrame extends JFrame {
             conditionTableModel.setConditions(conditions);
             if (conditionTableModel.getConditionCount() > 0) {
                 conditionTable.getSelectionModel().setSelectionInterval(0, 0);
-                showConditionEditorPlaceholder("配置已加载，请点击“编辑选中条件”开始编辑");
-            } else {
-                showConditionEditorPlaceholder("暂无条件，请先新增条件");
             }
         } finally {
             suppressBasicConfigAutoSave = previousSuppress;
@@ -2466,9 +3037,14 @@ public class MainFrame extends JFrame {
                 log("已根据配置自动恢复绑定: " + window.toDisplayText());
                 refreshRegionOverlayQuietly();
                 refreshClickOverlayQuietly();
+                hideBindPanel();
             });
+            if (restored.isEmpty()) {
+                showBindPanel();
+            }
         } catch (Exception e) {
             log("恢复绑定失败: " + e.getMessage());
+            showBindPanel();
         }
     }
 
@@ -2518,6 +3094,10 @@ public class MainFrame extends JFrame {
     private void shutdown() {
         try {
             basicConfigAutoSaveTimer.stop();
+            boundWindowWatchTimer.stop();
+            if (conditionEditorDialog != null && conditionEditorDialog.isDisplayable()) {
+                conditionEditorDialog.dispose();
+            }
             regionOverlayTimer.stop();
             regionOverlay.hideOverlay();
             clickOverlayTimer.stop();
